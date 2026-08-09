@@ -1,0 +1,34 @@
+name: Windows CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          package-manager-cache: true
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Update Neutralino runtime files
+        run: npx neu update
+      - name: Unit and integration tests
+        run: npm test
+      - name: Static project guards
+        run: npm run check
+      - name: Virtual eight-hour soak
+        run: npm run test:soak
+      - name: Release build
+        run: npm run build

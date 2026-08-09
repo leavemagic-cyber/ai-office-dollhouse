@@ -1,0 +1,15 @@
+node_modules/
+bin/
+dist/
+.tmp/
+.visual-test/
+*.log
+neutralinojs.log
+resources.neu
+storage/
+coverage/
+.DS_Store
+Thumbs.db
+*.user.json
+release/
+scripts/relay/*.exe

@@ -1,0 +1,205 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading;
+using System.Web.Script.Serialization;
+
+internal static class AIOfficeHookRelay
+{
+    private const int MaxInputChars = 1048576;
+
+    private static object GetValue(Dictionary<string, object> payload, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            object value;
+            if (payload.TryGetValue(name, out value) && value != null) return value;
+        }
+        return null;
+    }
+
+    private static string TextValue(Dictionary<string, object> payload, params string[] names)
+    {
+        object value = GetValue(payload, names);
+        return value == null ? string.Empty : Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+    }
+
+    private static string Hash(string value, int length)
+    {
+        using (SHA256 sha = SHA256.Create())
+        {
+            byte[] bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(value ?? string.Empty));
+            StringBuilder output = new StringBuilder(bytes.Length * 2);
+            foreach (byte item in bytes) output.Append(item.ToString("x2", CultureInfo.InvariantCulture));
+            return output.ToString(0, Math.Min(length, output.Length));
+        }
+    }
+
+    private static string Clip(string value, int maximum)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        string clean = value.Replace("\r", " ").Replace("\n", " ").Replace("<", string.Empty).Replace(">", string.Empty).Trim();
+        return clean.Length <= maximum ? clean : clean.Substring(0, Math.Max(1, maximum - 3)) + "...";
+    }
+
+    private static long Timestamp(Dictionary<string, object> payload)
+    {
+        object raw = GetValue(payload, "timestamp");
+        if (raw != null)
+        {
+            long numeric;
+            if (long.TryParse(Convert.ToString(raw, CultureInfo.InvariantCulture), NumberStyles.Any, CultureInfo.InvariantCulture, out numeric) && numeric > 100000000000L)
+                return numeric;
+            DateTimeOffset parsed;
+            if (DateTimeOffset.TryParse(Convert.ToString(raw, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out parsed))
+                return parsed.ToUnixTimeMilliseconds();
+        }
+        return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    }
+
+    private static string NormalizeHook(string value)
+    {
+        StringBuilder result = new StringBuilder();
+        foreach (char character in value ?? string.Empty)
+            if (char.IsLetterOrDigit(character)) result.Append(char.ToLowerInvariant(character));
+        return result.ToString();
+    }
+
+    private static string MapEvent(string hook, Dictionary<string, object> payload)
+    {
+        switch (hook)
+        {
+            case "sessionstart": return "session_started";
+            case "userpromptsubmit": return "turn_started";
+            case "beforeagent": return "turn_started";
+            case "stop": return "turn_completed";
+            case "afteragent": return "turn_completed";
+            case "sessionend": return "session_stopped";
+            case "subagentstart": return "agent_spawned";
+            case "subagentstop": return "agent_finished";
+            case "pretooluse": return "tool_started";
+            case "beforetool": return "tool_started";
+            case "posttooluse": return "tool_finished";
+            case "aftertool": return "tool_finished";
+            case "permissionrequest": return "owner_input_required";
+            case "notification":
+                string kind = TextValue(payload, "notification_type", "notificationType");
+                return kind.IndexOf("permission", StringComparison.OrdinalIgnoreCase) >= 0 || kind.IndexOf("elicitation", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? "owner_input_required" : string.Empty;
+            default: return string.Empty;
+        }
+    }
+
+    private static void AppendWithRetry(string path, string line)
+    {
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            try
+            {
+                using (FileStream stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                using (StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                {
+                    writer.WriteLine(line);
+                    return;
+                }
+            }
+            catch (IOException)
+            {
+                if (attempt == 3) return;
+                Thread.Sleep(15 * (attempt + 1));
+            }
+        }
+    }
+
+    private static void Run(string provider, string surfaceKind)
+    {
+        if (provider == "claude" && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GROK_HOOK_EVENT"))) return;
+        string raw;
+        using (StreamReader reader = new StreamReader(Console.OpenStandardInput(), Encoding.UTF8, true, 4096, false)) raw = reader.ReadToEnd();
+        if (string.IsNullOrWhiteSpace(raw) || raw.Length > MaxInputChars) return;
+
+        JavaScriptSerializer serializer = new JavaScriptSerializer();
+        serializer.MaxJsonLength = MaxInputChars;
+        Dictionary<string, object> payload = serializer.Deserialize<Dictionary<string, object>>(raw);
+        if (payload == null) return;
+
+        string hookRaw = TextValue(payload, "hook_event_name", "hookEventName");
+        if (string.IsNullOrWhiteSpace(hookRaw)) hookRaw = Environment.GetEnvironmentVariable("GROK_HOOK_EVENT") ?? string.Empty;
+        string hook = NormalizeHook(hookRaw);
+        string eventType = MapEvent(hook, payload);
+        string rawSession = TextValue(payload, "session_id", "sessionId");
+        if (string.IsNullOrWhiteSpace(eventType) || string.IsNullOrWhiteSpace(rawSession)) return;
+
+        string rawAgent = TextValue(payload, "agent_id", "agentId", "agent_name", "agentName");
+        string rawTurn = TextValue(payload, "turn_id", "turnId", "tool_use_id", "toolUseId");
+        string rawTool = TextValue(payload, "tool_name", "toolName");
+        string rawRole = TextValue(payload, "agent_type", "agentType", "agent_name", "agentName");
+        string rawCwd = TextValue(payload, "cwd", "workspaceRoot");
+        long timestamp = Timestamp(payload);
+        string sessionId = Hash(provider + ":" + rawSession, 24);
+        string agentId = string.IsNullOrWhiteSpace(rawAgent) ? null : Hash(provider + ":" + rawSession + ":" + rawAgent, 24);
+        string parentAgentId = eventType == "agent_spawned" ? "main:" + sessionId : null;
+        string safeLabel = "Unnamed work";
+        if (!string.IsNullOrWhiteSpace(rawCwd))
+        {
+            string trimmed = rawCwd.TrimEnd('\\', '/');
+            safeLabel = Path.GetFileName(trimmed);
+            if (string.IsNullOrWhiteSpace(safeLabel)) safeLabel = "Unnamed work";
+        }
+        safeLabel = Clip(safeLabel, 42);
+        string surface = surfaceKind == "auto" ? "unknown" : surfaceKind.ToLowerInvariant();
+        string eventId = Hash(string.Join("|", provider, rawSession, hook, rawAgent, rawTurn, rawTool, timestamp.ToString(CultureInfo.InvariantCulture)), 32);
+
+        Dictionary<string, object> officeEvent = new Dictionary<string, object>();
+        officeEvent["schemaVersion"] = 1;
+        officeEvent["eventId"] = eventId;
+        officeEvent["timestamp"] = timestamp;
+        officeEvent["provider"] = provider;
+        officeEvent["surfaceId"] = provider + ":" + surface;
+        officeEvent["surfaceKind"] = surface;
+        officeEvent["sessionId"] = sessionId;
+        officeEvent["agentId"] = agentId;
+        officeEvent["parentAgentId"] = parentAgentId;
+        officeEvent["eventType"] = eventType;
+        officeEvent["taskLabel"] = safeLabel;
+        officeEvent["role"] = Clip(rawRole, 24);
+        officeEvent["toolName"] = Clip(rawTool, 30);
+        officeEvent["observationTier"] = "A";
+        officeEvent["sourceConfidence"] = "structured";
+        officeEvent["important"] = eventType == "owner_input_required" || eventType == "session_stopped" || eventType == "agent_failed";
+
+        string dataDirectory = Environment.GetEnvironmentVariable("AI_OFFICE_DATA_DIR");
+        if (string.IsNullOrWhiteSpace(dataDirectory)) dataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AIOfficeDollhouse");
+        Directory.CreateDirectory(dataDirectory);
+        string eventPath = Path.Combine(dataDirectory, "events.ndjson");
+        if (File.Exists(eventPath) && new FileInfo(eventPath).Length > 2097152)
+        {
+            string archivePath = Path.Combine(dataDirectory, "events.1.ndjson");
+            if (File.Exists(archivePath)) File.Delete(archivePath);
+            File.Move(eventPath, archivePath);
+        }
+        AppendWithRetry(eventPath, serializer.Serialize(officeEvent));
+    }
+
+    public static int Main(string[] args)
+    {
+        try
+        {
+            try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
+            string provider = args.Length > 0 ? args[0].ToLowerInvariant() : string.Empty;
+            string surface = args.Length > 1 ? args[1].ToLowerInvariant() : "auto";
+            if (provider == "codex" || provider == "claude" || provider == "gemini" || provider == "grok") Run(provider, surface);
+        }
+        catch
+        {
+            // Observability hooks always fail open and never print raw payloads.
+        }
+        Console.OutputEncoding = new UTF8Encoding(false);
+        Console.Write("{}");
+        return 0;
+    }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "ai-office-dollhouse",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A lightweight, read-only desktop dollhouse for visualizing local AI agent activity.",
+  "scripts": {
+    "start": "neu run",
+    "dev": "neu run -- --window-enable-inspector=true",
+    "build:relay": "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/build-relay.ps1",
+    "pretest": "npm run build:relay",
+    "test": "node --test tests/*.test.mjs",
+    "test:soak": "node scripts/soak-test.mjs",
+    "check": "node scripts/check-project.mjs",
+    "build": "neu build --release",
+    "package:win": "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/package-release.ps1"
+  },
+  "devDependencies": {
+    "@neutralinojs/neu": "11.7.2"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}
