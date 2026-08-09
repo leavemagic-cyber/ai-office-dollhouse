@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AI 玩偶辦公室</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app-shell">
+    <header class="app-header">
+      <div class="brand-block">
+        <div class="brand-mark" aria-hidden="true">▦</div>
+        <div>
+          <h1>AI 玩偶辦公室</h1>
+          <p>唯讀 · 本機 · 零額外 token · 無音效</p>
+        </div>
+      </div>
+      <div class="header-status" aria-live="polite">
+        <span id="truth-chip" class="status-chip status-neutral">等待偵測</span>
+        <span id="resource-chip" class="status-chip resource-green">資源：Green</span>
+        <button id="toggle-panel" class="icon-button" type="button" aria-label="顯示或隱藏控制面板">☰</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="office-pane" aria-label="玩偶辦公室動畫">
+        <div id="office-scroll" class="office-scroll" tabindex="0">
+          <canvas id="office-canvas" aria-label="AI 工作狀態玩偶屋"></canvas>
+        </div>
+        <div class="office-toolbar" role="toolbar" aria-label="辦公室快速操作">
+          <button id="scan-now" type="button">重新偵測</button>
+          <button id="play-demo" type="button">播放示範</button>
+          <button id="privacy-toggle" type="button" aria-pressed="false">隱私遮罩</button>
+          <button id="always-on-top" type="button" aria-pressed="false">保持最上層</button>
+        </div>
+      </section>
+
+      <aside id="control-panel" class="control-panel" aria-label="控制與診斷">
+        <section class="panel-section">
+          <div class="section-heading">
+            <h2>顯示模式</h2>
+            <span id="effective-mode" class="micro-label">完整動態</span>
+          </div>
+          <div class="mode-grid" role="radiogroup" aria-label="顯示模式">
+            <button type="button" data-mode="full" role="radio" aria-checked="true">完整動態</button>
+            <button type="button" data-mode="low" role="radio" aria-checked="false">低動態</button>
+            <button type="button" data-mode="dnd" role="radio" aria-checked="false">勿擾</button>
+            <button type="button" data-mode="important" role="radio" aria-checked="false">重要事件</button>
+          </div>
+          <label class="switch-row">
+            <input id="auto-protect" type="checkbox" checked>
+            <span>主線保護（自動降載）</span>
+          </label>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <h2>主動偵測</h2>
+            <span id="scan-time" class="micro-label">尚未掃描</span>
+          </div>
+          <p class="panel-help">開啟即自動尋找 App／CLI；只有結構化事件才會畫成工作中。</p>
+          <div id="provider-list" class="provider-list"></div>
+        </section>
+
+        <section class="panel-section metrics-section">
+          <div class="section-heading"><h2>資源與真實性</h2></div>
+          <dl class="metrics-grid">
+            <div><dt>CPU</dt><dd id="metric-cpu">—</dd></div>
+            <div><dt>記憶體</dt><dd id="metric-memory">—</dd></div>
+            <div><dt>團隊樓</dt><dd id="metric-teams">0</dd></div>
+            <div><dt>專案桌</dt><dd id="metric-pods">0</dd></div>
+            <div><dt>可見員工</dt><dd id="metric-agents">0</dd></div>
+            <div><dt>事件</dt><dd id="metric-events">0</dd></div>
+          </dl>
+        </section>
+
+        <section class="panel-section activity-section">
+          <div class="section-heading"><h2>最近事件</h2></div>
+          <ol id="activity-list" class="activity-list"></ol>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="app-footer">
+      <span id="footer-message">程式不會控制、暫停或調整任何外部 AI 程序。</span>
+      <span id="version-label">v0.1.0</span>
+    </footer>
+  </div>
+
+  <script src="js/neutralino.js"></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
