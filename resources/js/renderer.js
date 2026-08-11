@@ -123,10 +123,16 @@ function singleFloorOccupants(model) {
   return occupants.slice(0, SINGLE_FLOOR_CAPACITY).map((person, order) => ({ ...person, podIndex: Math.floor(order / SEATS_PER_ISLAND) }));
 }
 
-/** How many people the building holds right now, used to pick single vs stacked floors. */
+/**
+ * How many people the building holds right now, used to pick single vs stacked floors.
+ * Counted from the raw session populations, never from the drawn occupants: those are
+ * already clipped to what one plate can seat, so counting them would report a full
+ * building as small enough for the single-floor view and silently drop the rest.
+ */
 export function totalOccupants(model) {
   // The Owner always occupies a seat, so they count towards the floor's capacity.
-  return TEAM_ROOMS.reduce((sum, room) => sum + allOccupantsForProvider(room, model).filter((person) => !person.hidden).length, 0) + 1;
+  return TEAM_ROOMS.reduce((sum, room) => sum
+    + sessionsForProvider(model?.providers?.[room]).reduce((people, session) => people + session.population, 0), 0) + 1;
 }
 
 /**
@@ -695,9 +701,10 @@ export class RoomRenderer {
           room: this.room
         })
       }));
-      // A busy floor seats people two grid rows apart, so shrink them enough that a
-      // figure never overlaps the one standing behind it.
-      const figureScale = posed.length > 6 ? Math.max(.72, 1 - (posed.length - 6) * .035) : 1;
+      // Figures are never shrunk. A floor is capped at six people plus the Owner, and the
+      // seat plan keeps them apart at full size; shrinking was how the old plan bought
+      // capacity it did not have, and it made the drawing worse to hide the overcrowding.
+      const figureScale = 1;
 
       for (const [index, actor] of posed.entries()) {
         const person = actor.placement.person;

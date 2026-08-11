@@ -328,18 +328,40 @@ async function startTower() {
   let clickThroughScale = 1;
   let clickThroughBusy = false;
 
+  // If the native call ever stops answering while the window is click-through, the Owner
+  // can no longer reach the title bar to close it. Two failures in a row therefore force
+  // the window back to interactive: a stuck overlay that eats clicks is far worse than
+  // one that stops passing them through.
+  let clickThroughFailures = 0;
+
   async function applyClickThrough(next) {
     clickThroughBusy = true;
     try {
       const measured = await bridge.setClickThrough(next);
       if (measured) {
+        clickThroughFailures = 0;
         clickThroughState = Boolean(measured.clickThrough);
         clickThroughRect = measured;
         clickThroughScale = scaleFromRect(measured, effectiveOverlayWidth());
+        return;
+      }
+      clickThroughFailures += 1;
+      clickThroughRect = null;
+      if (clickThroughState !== false && clickThroughFailures >= 2) {
+        clickThroughState = false;
+        bridge.setClickThrough(false).catch(() => {});
       }
     } finally {
       clickThroughBusy = false;
     }
+  }
+
+  /** Never leave a hidden or minimised window in the click-through state. */
+  async function restoreClickThroughForChrome() {
+    if (clickThroughState === false) return;
+    clickThroughState = false;
+    clickThroughRect = null;
+    await bridge.setClickThrough(false).catch(() => {});
   }
 
   function invalidateClickThroughRect() {
@@ -406,7 +428,7 @@ async function startTower() {
     if (shouldShow === overlayVisible) return;
     overlayVisible = shouldShow;
     if (shouldShow) bridge.show({ focus: false }).catch(() => {});
-    else bridge.hide().catch(() => {});
+    else restoreClickThroughForChrome().finally(() => bridge.hide().catch(() => {}));
   }
 
   async function ensureIntegrationCoverage() {
@@ -702,7 +724,12 @@ async function startTower() {
     }
   });
 
-  document.getElementById('tower-minimize').addEventListener('click', () => bridge.minimize());
+  document.getElementById('tower-minimize').addEventListener('click', async () => {
+    // Clear the click-through style first: a minimised window that still ignores the
+    // mouse cannot be restored by clicking it.
+    await restoreClickThroughForChrome();
+    await bridge.minimize();
+  });
   document.getElementById('tower-close').addEventListener('click', () => bridge.close());
   document.getElementById('tower-privacy').addEventListener('click', () => {
     settings.privacyMask = !settings.privacyMask; saveSettings(settings); scheduleBroadcast();
@@ -777,6 +804,9 @@ async function startTower() {
         settings.windowY = boundedInteger(position.y, settings.windowY, -10_000, 10_000);
         saveSettings(settings);
       } catch { /* keeping the current location is sufficient */ }
+      // The window just moved, so every cached screen rectangle is wrong: the next poll
+      // has to measure again before it decides what is chrome and what is drawing.
+      invalidateClickThroughRect();
     }, 0);
   });
 

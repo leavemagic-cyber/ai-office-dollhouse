@@ -152,6 +152,16 @@ test('historical hook-open surfaces do not keep unknown workers or empty annexes
   assert.equal(annexCountForDisplay([], []), 1);
 });
 
+test('the headcount counts real people, not the ones that fit on a plate', async () => {
+  const { totalOccupants, SINGLE_FLOOR_CAPACITY } = await import('../resources/js/renderer.js');
+  // Ten workers in one team plus the Owner. Counting the drawn occupants instead of the
+  // real roster reported seven, which quietly chose the single-floor view and dropped
+  // four people with no "+N" anywhere.
+  const model = { providers: { codex: { livePods: [pod('big', '大隊', 9)] }, claude: { livePods: [] }, gemini: { livePods: [] }, grok: { livePods: [] } } };
+  assert.equal(totalOccupants(model), 11);
+  assert.ok(totalOccupants(model) > SINGLE_FLOOR_CAPACITY, 'eleven people must not fit the single floor');
+});
+
 test('fresh Tier-D presence may freeze an unknown live team without inventing new work', () => {
   const now = 3_000_000;
   const unknown = { lifecycle: 'active', activity: 'unknown', lastActivityAt: now - 20_000, agents: [{}, {}] };

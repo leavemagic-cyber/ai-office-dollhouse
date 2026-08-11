@@ -208,8 +208,8 @@ function openPlanOffice(room, pods, headquarters) {
   }
 
   // Six people to a floor leaves room for the parts of an office that are not desks: a
-  // lounge by the entrance, a water point beside the pantry, and a shelf wall at the back.
-  // Owner, 2026-08-12: with the headcount capped, spend the floor on this instead.
+  // lounge by the entrance, and nothing else: two reviewers independently warned that
+  // extra props at this scale read as a furniture catalogue, not as a better office.
   // One anchor per zone, drawn big, with air around it. Both reviewers landed on the same
   // rule independently: at this scale a floor reads as a good office through legible zones
   // and circulation, never through the number of props. So the sofa grows, the rug loses
@@ -218,13 +218,8 @@ function openPlanOffice(room, pods, headquarters) {
   items.push({ kind: 'sofa', gx: 1.3, gy: 8.4, w: 2.2, d: .95, facing: 1 });
   items.push({ kind: 'meeting', gx: 2.9, gy: 8.7, w: 1.15, d: 1.0, low: true });
   items.push({ kind: 'plant', gx: 6.4, gy: 8.6 });
-  items.push({ kind: 'cooler', gx: 6.4, gy: .8 });
   // A doorway on the front edge turns the plate from a display stand into a place.
   items.push({ kind: 'wall', x1: 5.4, y1: 9.6, x2: 8.4, y2: 9.6, door: [.34, .72] });
-  // The shelf wall goes where that floor has a back wall free: the Owner's room owns the
-  // back-left corner on the headquarters plate.
-  if (headquarters) items.push({ kind: 'cabinet', gx: 2.3, gy: .6, w: .8, d: .5, h: 1.6, shelves: 2 });
-  else items.push({ kind: 'cabinet', gx: .8, gy: .9, w: 1.2, d: .7, h: 2.0, shelves: 3 });
 
   // Huddle corner: the informal stand-up spot every floor keeps, with its own board.
   const huddleY = 6.4;
@@ -236,12 +231,12 @@ function openPlanOffice(room, pods, headquarters) {
   seats.push({ gx: 8.6, gy: huddleY + .9, pod: 0, facing: -1, role: 'meet' });
 
   for (const [index, desks] of banks.entries()) {
-    // A real OA cluster: individual workstations facing a shared screen, back to back.
-    items.push({ kind: 'screen', gx: desks.gx, gy: desks.gy, w: 3.5, h: 1.15 });
+    // Bench desking, the way an open-plan office is actually laid out: one run of worktop
+    // shared back to back, not four separate tables. Nine outlines per island became two,
+    // which is what the plate was really short of -- it had 36 objects on a 136x80 canvas.
+    items.push({ kind: 'island', gx: desks.gx, gy: desks.gy, w: 3.4, d: 1.5, monitors: 2, pod: index });
     for (const seat of bankSeats(desks, index)) {
       const toward = seat.gy < desks.gy ? .66 : -.66;
-      items.push({ kind: 'desk', gx: seat.gx, gy: seat.gy + toward, w: 1.5, d: .62, monitors: 1, pod: index });
-      // The chair sits just behind the person so both stay readable.
       items.push({ kind: 'chair', gx: seat.gx, gy: seat.gy - toward * .42, task: true, facing: toward > 0 ? 1 : -1 });
       seats.push(seat);
     }
@@ -822,18 +817,6 @@ export function drawOfficeItem(ctx, project, theme, item, progress = 1) {
       }
       break;
     }
-    case 'cooler': {
-      // Water point: a slim column with the bottle read as a rounded top.
-      drawBox(ctx, project, item.gx, item.gy, .5, .5, 1.05, { progress, width: .5, tone: theme.tone });
-      const bottle = clamp((progress - .5) / .5);
-      if (bottle > 0) {
-        const [cx, cy] = project(item.gx, item.gy, 1.05);
-        strokeEllipse(ctx, cx, cy - 2.2, 1.5, .8, { width: .45, alpha: bottle });
-        strokeLine(ctx, [cx - 1.5, cy - 2.2], [cx - 1.1, cy], { width: .4, alpha: bottle });
-        strokeLine(ctx, [cx + 1.5, cy - 2.2], [cx + 1.1, cy], { width: .4, alpha: bottle });
-      }
-      break;
-    }
     case 'meeting': {
       const height = item.low ? .58 : DESK_HEIGHT;
       const centre = project(item.gx, item.gy, height);
@@ -1400,6 +1383,44 @@ export function drawPlanItem(ctx, project, theme, item, progress = 1) {
     case 'mat': {
       const box = planRect(project, item.gx, item.gy, item.w, item.d);
       strokePoly(ctx, box, { close: true, width: .45, alpha: .7, progress });
+      break;
+    }
+    case 'sofa': {
+      // Plan convention: the seat outline with the back drawn as a heavier edge.
+      const box = planRect(project, item.gx, item.gy, item.w, item.d);
+      if (theme.tone) fillPoly(ctx, box, theme.tone.faceTop, clamp(progress * 1.4));
+      strokePoly(ctx, box, { close: true, width: .55, progress });
+      const facing = item.facing === -1 ? -1 : 1;
+      const backGy = item.gy - facing * item.d / 2;
+      strokeLine(ctx, project(item.gx - item.w / 2, backGy), project(item.gx + item.w / 2, backGy), { width: .75, alpha: .9, progress: clamp((progress - .4) / .6) });
+      break;
+    }
+    case 'meeting': {
+      // Round tables are circles in plan, at their real diameter.
+      const [cx, cy] = project(item.gx, item.gy);
+      const radius = Math.max(1.6, (item.w || 1.8) * PLAN.cellWidth / 2);
+      if (theme.tone) {
+        ctx.save();
+        ctx.globalAlpha *= clamp(progress * 1.4);
+        ctx.fillStyle = theme.tone.faceTop;
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+      strokeEllipse(ctx, cx, cy, radius, radius, { width: .55, alpha: clamp(progress * 1.4) });
+      break;
+    }
+    case 'wall': {
+      // Walls are the plan's structure: two spans with the doorway left open.
+      const spans = item.door ? [[0, item.door[0]], [item.door[1], 1]] : [[0, 1]];
+      for (const [from, to] of spans) {
+        const ax = item.x1 + (item.x2 - item.x1) * from;
+        const ay = item.y1 + (item.y2 - item.y1) * from;
+        const bx = item.x1 + (item.x2 - item.x1) * to;
+        const by = item.y1 + (item.y2 - item.y1) * to;
+        strokeLine(ctx, project(ax, ay), project(bx, by), { width: .8, progress });
+      }
       break;
     }
     default:
