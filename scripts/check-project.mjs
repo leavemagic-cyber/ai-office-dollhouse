@@ -37,6 +37,17 @@ assert.equal(packageJson.private, true);
 assert.equal(packageJson.license, 'MIT');
 assert.equal(existsSync(join(root, 'scripts', 'relay', 'AIOfficeHookRelay.exe')), true, 'compiled relay missing');
 
+// Every PowerShell helper the runtime calls has to be in the release package, or the
+// installed build loses that feature silently. set-click-through.ps1 shipped broken once.
+const runtimeSources = files.filter((item) => item.includes(`${join(root, 'resources', 'js')}\\`) && item.endsWith('.js'));
+const packageScript = readFileSync(join(root, 'scripts', 'package-release.ps1'), 'utf8');
+for (const path of runtimeSources) {
+  for (const [, script] of readFileSync(path, 'utf8').matchAll(/runPowerShell\('([a-z0-9-]+\.ps1)'/g)) {
+    assert.equal(existsSync(join(root, 'scripts', script)), true, `${script} is called at runtime but missing from scripts/`);
+    assert.ok(packageScript.includes(`scripts\\${script}`), `${script} is called at runtime but never copied by package-release.ps1`);
+  }
+}
+
 const forbiddenMedia = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.flac']);
 assert.deepEqual(projectFiles.filter((path) => forbiddenMedia.has(extname(path).toLowerCase())), []);
 
