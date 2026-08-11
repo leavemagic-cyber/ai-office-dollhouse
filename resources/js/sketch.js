@@ -146,8 +146,13 @@ export function projector({ centerX = PLATE.centerX, top = PLATE.top, unit = PLA
 // Seats are listed in fill order so a small team never lines up head-to-toe.
 // Four-person islands in one aligned column, long axis parallel, ends onto the main
 // corridor. Spacing keeps the chair-back aisle clear (Codex/GSA space-planning review).
+/**
+ * A row of three individual desks behind one low screen. Owner, 2026-08-12: an open-plan
+ * office here is separate desks, not a shared bench. Seats sit 1.1 grid apart, which is
+ * 7.2px apart on screen, so three figures in a row never merge.
+ */
 function bank(gx, gy) {
-  return { gx, gy, seats: [[gx + 1.1, gy - .85], [gx - 1.1, gy + .85], [gx - 1.1, gy - .85], [gx + 1.1, gy + .85]] };
+  return { gx, gy, seats: [[gx, gy], [gx - 1.35, gy], [gx + 1.35, gy]] };
 }
 
 // Islands are separated by their *projected* bounding boxes, not by grid distance: banks
@@ -157,7 +162,7 @@ function bank(gx, gy) {
 // Owner, 2026-08-12: a floor holds at most six people, so two islands are enough and the
 // figures never have to be shrunk to fit. Discussion:
 // docs/handoff/DISCUSS_OFFICE_LAYOUT_20260812.md.
-const ISLANDS = [bank(1.6, 5.0), bank(4.8, 8.2)];
+const ISLANDS = [bank(1.9, 5.0), bank(7.0, 3.95)];
 const HQ_BANKS = ISLANDS;
 const WORK_BANKS = ISLANDS;
 
@@ -165,7 +170,8 @@ const WORK_BANKS = ISLANDS;
 export const SEATS_PER_ISLAND = 4;
 
 function bankSeats(bank, pod) {
-  return bank.seats.map(([gx, gy]) => ({ gx, gy, pod, facing: gy < bank.gy ? -1 : 1, desk: true }));
+  // A row faces its own screen, which sits just behind the desks.
+  return bank.seats.map(([gx, gy]) => ({ gx, gy, pod, facing: -1, desk: true }));
 }
 
 /**
@@ -201,10 +207,10 @@ function openPlanOffice(room, pods, headquarters) {
     seats.push({ gx: 8.7, gy: 8.6, pod: 0, facing: -1, role: 'reception', desk: true });
   } else {
     // Focus booth: the one enclosed room a work floor gets, for private calls and reviews.
-    items.push({ kind: 'wall', x1: 7.7, y1: 1.9, x2: 10, y2: 1.9 });
-    items.push({ kind: 'wall', x1: 7.7, y1: 1.9, x2: 7.7, y2: 4.4, door: [.62, .92] });
-    items.push({ kind: 'chair', gx: 8.8, gy: 3.2, task: true, facing: -1 });
-    seats.push({ gx: 8.8, gy: 3.2, pod: 0, facing: -1, role: 'focus' });
+    items.push({ kind: 'wall', x1: 8.2, y1: 1.1, x2: 10, y2: 1.1 });
+    items.push({ kind: 'wall', x1: 8.2, y1: 1.1, x2: 8.2, y2: 2.6, door: [.6, .92] });
+    items.push({ kind: 'chair', gx: 9.1, gy: 1.9, task: true, facing: -1 });
+    seats.push({ gx: 9.1, gy: 1.9, pod: 0, facing: -1, role: 'focus' });
   }
 
   // Six people to a floor leaves room for the parts of an office that are not desks: a
@@ -214,9 +220,7 @@ function openPlanOffice(room, pods, headquarters) {
   // rule independently: at this scale a floor reads as a good office through legible zones
   // and circulation, never through the number of props. So the sofa grows, the rug loses
   // its inner border, and the floor keeps a single plant instead of one per corner.
-  items.push({ kind: 'mat', gx: 2.0, gy: 8.4, w: 2.8, d: 2.0, rug: true });
   items.push({ kind: 'sofa', gx: 1.3, gy: 8.4, w: 2.2, d: .95, facing: 1 });
-  items.push({ kind: 'meeting', gx: 2.9, gy: 8.7, w: 1.15, d: 1.0, low: true });
   items.push({ kind: 'plant', gx: 6.4, gy: 8.6 });
   // A doorway on the front edge turns the plate from a display stand into a place.
   items.push({ kind: 'wall', x1: 5.4, y1: 9.6, x2: 8.4, y2: 9.6, door: [.34, .72] });
@@ -231,13 +235,11 @@ function openPlanOffice(room, pods, headquarters) {
   seats.push({ gx: 8.6, gy: huddleY + .9, pod: 0, facing: -1, role: 'meet' });
 
   for (const [index, desks] of banks.entries()) {
-    // Bench desking, the way an open-plan office is actually laid out: one run of worktop
-    // shared back to back, not four separate tables. Nine outlines per island became two,
-    // which is what the plate was really short of -- it had 36 objects on a 136x80 canvas.
-    items.push({ kind: 'island', gx: desks.gx, gy: desks.gy, w: 3.4, d: 1.5, monitors: 2, pod: index });
+    // Individual desks, one per person, sharing a low screen along the back of the row.
+    // Six desks for a six-person floor, so nothing is drawn that nobody can sit at.
     for (const seat of bankSeats(desks, index)) {
-      const toward = seat.gy < desks.gy ? .66 : -.66;
-      items.push({ kind: 'chair', gx: seat.gx, gy: seat.gy - toward * .42, task: true, facing: toward > 0 ? 1 : -1 });
+      items.push({ kind: 'desk', gx: seat.gx, gy: seat.gy - .62, w: 1.0, d: .58, monitors: 1, partition: true, pod: index });
+      items.push({ kind: 'chair', gx: seat.gx, gy: seat.gy + .34, task: true, facing: -1 });
       seats.push(seat);
     }
   }
@@ -636,6 +638,23 @@ export function drawOfficeItem(ctx, project, theme, item, progress = 1) {
         strokeLine(ctx, project(item.gx + dx, item.gy + dy, lip), project(item.gx + dx, item.gy + dy, 0), { width: .5, progress: legs });
       }
       const extras = clamp((progress - .5) / .5);
+      // Owner, 2026-08-12: every desk gets its own partition, not one screen shared by a
+      // row. Drawing it as part of the desk keeps the workstation a single object: desk,
+      // panel, monitor and chair read as one unit instead of four scattered outlines.
+      if (item.partition) {
+        // A desktop screen, not a wall: tall enough to read as a partition, low enough
+        // that a seated figure still stands clear of it. Outline only -- a filled panel
+        // behind every desk turned the work zone into one bright slab and swallowed the
+        // figures, which is exactly what it is meant to separate.
+        const panelGy = item.gy - halfDepth - .04;
+        const panel = [
+          project(item.gx - halfWidth, panelGy, height - .08),
+          project(item.gx + halfWidth, panelGy, height - .08),
+          project(item.gx + halfWidth, panelGy, 1.42),
+          project(item.gx - halfWidth, panelGy, 1.42)
+        ];
+        strokePoly(ctx, panel, { close: true, width: .45, progress: clamp((progress - .25) / .75) });
+      }
       // A workstation without a screen does not read as a workstation. `monitors` was
       // being passed by every desk bank and silently ignored here, which is why the whole
       // floor looked like a room full of empty tables.
