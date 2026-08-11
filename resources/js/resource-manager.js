@@ -1,28 +1,36 @@
 import { compactOfficeState, DISPLAY_MODES } from './domain.js';
 
 const MODE_FPS = Object.freeze({
-  [DISPLAY_MODES.FULL]: 16,
-  [DISPLAY_MODES.LOW]: 6,
-  [DISPLAY_MODES.DND]: 1,
-  [DISPLAY_MODES.IMPORTANT]: 4
+  [DISPLAY_MODES.FULL]: 30,
+  [DISPLAY_MODES.LOW]: 12,
+  [DISPLAY_MODES.DND]: 2,
+  [DISPLAY_MODES.IMPORTANT]: 8
 });
 
+const LEVELS = Object.freeze(['green', 'yellow', 'orange', 'red']);
+
 export class ResourceLifecycleManager {
-  constructor({ state, onLevelChanged }) {
+  constructor({ state, onLevelChanged, recoveryCooldownMs = 20_000 }) {
     this.state = state;
     this.onLevelChanged = onLevelChanged;
     this.system = { cpuLoadPercent: 0, memoryLoadPercent: 0, onBattery: false };
     this.frameTimes = [];
     this.level = 'green';
-    this.hidden = document.hidden;
+    this.recoveryCooldownMs = recoveryCooldownMs;
+    this.recoveryCandidate = null;
+    this.recoverySince = 0;
+    this.hidden = Boolean(globalThis.document?.hidden);
     this.compactionTimer = null;
-    this.visibilityHandler = () => { this.hidden = document.hidden; };
-    document.addEventListener('visibilitychange', this.visibilityHandler);
+    this.visibilityHandler = () => {
+      this.hidden = Boolean(globalThis.document?.hidden);
+      this.onLevelChanged?.(this.level, this.system);
+    };
+    globalThis.document?.addEventListener('visibilitychange', this.visibilityHandler);
   }
 
-  updateSystemMetrics(metrics = {}) {
+  updateSystemMetrics(metrics = {}, now = Date.now()) {
     this.system = { ...this.system, ...metrics };
-    this.evaluateLevel();
+    this.evaluateLevel(now);
   }
 
   recordFrame(durationMs) {
@@ -32,21 +40,40 @@ export class ResourceLifecycleManager {
     if (this.frameTimes.length % 30 === 0) this.evaluateLevel();
   }
 
-  evaluateLevel() {
+  evaluateLevel(now = Date.now()) {
     const cpu = Number(this.system.cpuLoadPercent || 0);
     const memory = Number(this.system.memoryLoadPercent || 0);
     const frameAverage = this.frameTimes.length
       ? this.frameTimes.reduce((sum, value) => sum + value, 0) / this.frameTimes.length
       : 0;
-    let next = 'green';
-    if (cpu >= 90 || memory >= 94 || frameAverage >= 70) next = 'red';
-    else if (cpu >= 75 || memory >= 88 || frameAverage >= 45) next = 'orange';
-    else if (cpu >= 60 || memory >= 80 || this.system.onBattery || frameAverage >= 30) next = 'yellow';
+    let observed = 'green';
+    if (cpu >= 90 || memory >= 94 || frameAverage >= 70) observed = 'red';
+    else if (cpu >= 75 || memory >= 88 || frameAverage >= 45) observed = 'orange';
+    else if (cpu >= 60 || memory >= 80 || this.system.onBattery || frameAverage >= 30) observed = 'yellow';
+    const currentRank = LEVELS.indexOf(this.level);
+    const observedRank = LEVELS.indexOf(observed);
+    let next = this.level;
+    if (observedRank > currentRank) {
+      next = observed;
+      this.recoveryCandidate = null;
+      this.recoverySince = 0;
+    } else if (observedRank < currentRank) {
+      if (this.recoveryCandidate !== observed) {
+        this.recoveryCandidate = observed;
+        this.recoverySince = now;
+      } else if (now - this.recoverySince >= this.recoveryCooldownMs) {
+        next = LEVELS[Math.max(observedRank, currentRank - 1)];
+        this.recoverySince = now;
+      }
+    } else {
+      this.recoveryCandidate = null;
+      this.recoverySince = 0;
+    }
     if (next !== this.level) {
       this.level = next;
       this.onLevelChanged?.(next, this.system);
     }
-    return next;
+    return this.level;
   }
 
   effectiveMode(requestedMode) {
@@ -63,12 +90,17 @@ export class ResourceLifecycleManager {
     return MODE_FPS[this.effectiveMode(requestedMode)] || 10;
   }
 
+  frameIntervalMs(requestedMode) {
+    const fps = this.fps(requestedMode);
+    return fps > 0 ? Math.round(1000 / fps) : 1000;
+  }
+
   animationBudget(requestedMode) {
     const mode = this.effectiveMode(requestedMode);
-    if (mode === DISPLAY_MODES.FULL) return { movingDolls: 8, particles: 24, majorAnimation: true };
-    if (mode === DISPLAY_MODES.LOW) return { movingDolls: 3, particles: 4, majorAnimation: false };
-    if (mode === DISPLAY_MODES.IMPORTANT) return { movingDolls: 2, particles: 0, majorAnimation: false };
-    return { movingDolls: 0, particles: 0, majorAnimation: false };
+    if (mode === DISPLAY_MODES.FULL) return { movingDollsPerFloor: 2, decorativeMotion: true, signatureMotion: true };
+    if (mode === DISPLAY_MODES.LOW) return { movingDollsPerFloor: 1, decorativeMotion: true, signatureMotion: true };
+    if (mode === DISPLAY_MODES.IMPORTANT) return { movingDollsPerFloor: 0, decorativeMotion: false, signatureMotion: true };
+    return { movingDollsPerFloor: 0, decorativeMotion: false, signatureMotion: true };
   }
 
   startCompaction() {
@@ -79,7 +111,7 @@ export class ResourceLifecycleManager {
   dispose() {
     if (this.compactionTimer) clearInterval(this.compactionTimer);
     this.compactionTimer = null;
-    document.removeEventListener('visibilitychange', this.visibilityHandler);
+    globalThis.document?.removeEventListener('visibilitychange', this.visibilityHandler);
     this.frameTimes.length = 0;
   }
 }

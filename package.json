@@ -1,9 +1,9 @@
 {
   "name": "ai-office-dollhouse",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "A lightweight, read-only desktop dollhouse for visualizing local AI agent activity.",
+  "description": "A compact vertical 2.5D desktop dollhouse for visualizing real local AI agent activity.",
   "scripts": {
     "start": "neu run",
     "dev": "neu run -- --window-enable-inspector=true",

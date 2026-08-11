@@ -7,7 +7,7 @@ Contributions should preserve these non-negotiable boundaries:
 - presence is never displayed as active work;
 - process exit is never treated as task completion;
 - no network model calls or background token use;
-- hook changes require explicit user confirmation and must fail open;
+- hook changes follow the Owner-selected one-click local-install policy: preserve unrelated hooks, back up the changed settings, disclose the automatic repair in the UI and documentation, and fail open;
 - resource collections remain bounded and hidden windows do no rendering.
 
 Run `npm test`, `npm run check`, and `npm run test:soak` before opening a pull request. Keep provider-specific event mappings supported by primary documentation and add a regression test for every truth-model change.

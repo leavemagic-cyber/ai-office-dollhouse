@@ -96,6 +96,68 @@ test('compiled hook relay is private, fail-open, and provider-aware', { skip: pr
   assert.equal(JSON.parse(stored).eventType, 'turn_started');
 });
 
+test('hook relays only present subagent stop as terminal when the payload proves an outcome', { skip: process.platform !== 'win32' }, () => {
+  const relay = join(root, 'scripts', 'relay', 'AIOfficeHookRelay.exe');
+  assert.equal(existsSync(relay), true, 'run scripts/build-relay.ps1 first');
+  const cases = [
+    { name: 'no outcome', payload: {}, expected: null },
+    { name: 'explicit completion', payload: { status: 'completed' }, expected: 'agent_finished' },
+    { name: 'explicit success flag', payload: { success: true }, expected: 'agent_finished' },
+    { name: 'nonzero exit code', payload: { exit_code: 1 }, expected: 'agent_failed' },
+    { name: 'explicit stop', payload: { status: 'stopped' }, expected: 'agent_cancelled' },
+    { name: 'explicit cancellation', payload: { status: 'cancelled' }, expected: 'agent_cancelled' },
+    { name: 'explicit cancellation with diagnostic', payload: { status: 'cancelled', error: 'cancelled by the Owner' }, expected: 'agent_cancelled' },
+    { name: 'explicit error', payload: { error: 'child process ended unexpectedly' }, expected: 'agent_failed' }
+  ];
+  const runners = [
+    {
+      name: 'PowerShell fallback',
+      run(input, dataDirectory) {
+        return runScript('hook-relay.ps1', ['-Provider', 'codex', '-SurfaceKind', 'auto'], {
+          input,
+          env: { ...process.env, AI_OFFICE_DATA_DIR: dataDirectory }
+        });
+      }
+    },
+    {
+      name: 'compiled relay',
+      run(input, dataDirectory) {
+        return spawnSync(relay, ['codex', 'auto'], {
+          cwd: root,
+          encoding: 'utf8',
+          input,
+          env: { ...process.env, AI_OFFICE_DATA_DIR: dataDirectory }
+        });
+      }
+    }
+  ];
+
+  for (const runner of runners) {
+    for (const scenario of cases) {
+      const dataDirectory = mkdtempSync(join(tmpdir(), 'ai-office-subagent-stop-'));
+      const input = JSON.stringify({
+        session_id: `subagent-${scenario.name}`,
+        agent_id: 'child-1',
+        hook_event_name: 'SubagentStop',
+        cwd: 'C:\\Work\\Office Animation',
+        ...scenario.payload
+      });
+      const result = runner.run(input, dataDirectory);
+      assert.equal(result.status, 0, `${runner.name}: ${result.stderr}`);
+      assert.equal(result.stdout, '{}', runner.name);
+      const eventPath = join(dataDirectory, 'events.ndjson');
+      if (scenario.expected === null) {
+        assert.equal(existsSync(eventPath), false, `${runner.name}: ${scenario.name}`);
+      } else {
+        const stored = readFileSync(eventPath, 'utf8');
+        const event = JSON.parse(stored);
+        assert.equal(event.eventType, scenario.expected, `${runner.name}: ${scenario.name}`);
+        if (scenario.payload.error) assert.equal(stored.includes(scenario.payload.error), false, `${runner.name}: ${scenario.name} leaked diagnostic text`);
+      }
+    }
+  }
+});
+
 test('integration installer backs up and merges idempotently in an isolated root', { skip: process.platform !== 'win32' }, () => {
   const configRoot = mkdtempSync(join(tmpdir(), 'ai-office-config-'));
   const claudePath = join(configRoot, '.claude', 'settings.json');
@@ -125,4 +187,63 @@ test('integration installer backs up and merges idempotently in an isolated root
     join(configRoot, '.grok', 'hooks', 'ai-office-dollhouse.json')
   ];
   expected.forEach((path) => assert.equal(existsSync(path), true, path));
+});
+
+test('integration installer serializes newly created hook groups as arrays', { skip: process.platform !== 'win32' }, () => {
+  const configRoot = mkdtempSync(join(tmpdir(), 'ai-office-empty-config-'));
+  const result = runScript('install-integrations.ps1', ['-Provider', 'all', '-Action', 'install', '-ConfigRoot', configRoot]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(lastJsonLine(result.stdout).ok, true);
+
+  const settings = [
+    join(configRoot, '.codex', 'hooks.json'),
+    join(configRoot, '.claude', 'settings.json'),
+    join(configRoot, '.gemini', 'settings.json'),
+    join(configRoot, '.grok', 'hooks', 'ai-office-dollhouse.json')
+  ];
+  for (const path of settings) {
+    const config = JSON.parse(readFileSync(path, 'utf8'));
+    for (const groups of Object.values(config.hooks)) {
+      assert.equal(Array.isArray(groups), true, path);
+      assert.equal(groups.length, 1, path);
+      assert.equal(Array.isArray(groups[0].hooks), true, path);
+      assert.equal(groups[0].hooks.length, 1, path);
+    }
+    if (path.endsWith(join('.gemini', 'settings.json'))) {
+      for (const groups of Object.values(config.hooks)) {
+        assert.equal(groups[0].hooks[0].timeout, 5000, 'Gemini hook timeout must remain milliseconds');
+      }
+    }
+  }
+});
+
+test('integration uninstaller removes only AI Office hooks and its isolated relay', { skip: process.platform !== 'win32' }, () => {
+  const configRoot = mkdtempSync(join(tmpdir(), 'ai-office-uninstall-'));
+  const claudePath = join(configRoot, '.claude', 'settings.json');
+  mkdirSync(dirname(claudePath), { recursive: true });
+  writeFileSync(claudePath, JSON.stringify({
+    hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'existing-safe-hook' }] }] }
+  }));
+  const install = runScript('install-integrations.ps1', ['-Provider', 'all', '-Action', 'install', '-ConfigRoot', configRoot]);
+  assert.equal(install.status, 0, install.stderr);
+  const uninstall = runScript('install-integrations.ps1', ['-Provider', 'all', '-Action', 'uninstall', '-ConfigRoot', configRoot]);
+  assert.equal(uninstall.status, 0, uninstall.stderr);
+  assert.equal(lastJsonLine(uninstall.stdout).ok, true);
+  const claude = JSON.parse(readFileSync(claudePath, 'utf8'));
+  const commands = claude.hooks.SessionStart.flatMap((group) => group.hooks.map((hook) => hook.command));
+  assert.deepEqual(commands, ['existing-safe-hook']);
+  assert.equal(existsSync(join(configRoot, '.ai-office-data', 'integration', 'AIOfficeHookRelay.exe')), false);
+});
+
+test('application installer and uninstaller reject arbitrary roots before touching them', { skip: process.platform !== 'win32' }, () => {
+  const unexpectedRoot = mkdtempSync(join(tmpdir(), 'ai-office-unexpected-root-'));
+  const install = runScript('install-app.ps1', ['-InstallRoot', unexpectedRoot]);
+  assert.notEqual(install.status, 0);
+  assert.match(`${install.stdout}\n${install.stderr}`, /installs only to/i);
+  assert.deepEqual(readdirSync(unexpectedRoot), []);
+
+  const uninstall = runScript('uninstall-app.ps1', ['-InstallRoot', unexpectedRoot]);
+  assert.notEqual(uninstall.status, 0);
+  assert.match(`${uninstall.stdout}\n${uninstall.stderr}`, /unexpected directory/i);
+  assert.deepEqual(readdirSync(unexpectedRoot), []);
 });

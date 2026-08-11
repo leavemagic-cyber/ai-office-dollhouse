@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 玩偶辦公樓 V4 草稿 — 純線條版＋小人重設計</title>
+<style>
+  :root{
+    --ink:#33291D; --paper:#FAF5EA; --card:#FFFFFF; --line:#E4D8C2;
+    --g:#6E655A; --dash:#A89C86;
+    --codex:#4A6FA5; --claude:#6B8F71; --gemini:#B8860B; --grok:#8B5A6B;
+    --ok:#3D7A5A; --wait:#C4A35A; --err:#B54A4A;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+       font-family:"Microsoft JhengHei","Noto Sans TC",system-ui,sans-serif;line-height:1.55}
+  .wrap{max-width:920px;margin:0 auto;padding:28px 20px 60px}
+  header h1{font-size:22px;margin:0 0 4px}
+  .badge{display:inline-block;background:#B54A4A;color:#fff;border-radius:4px;
+         font-size:11px;padding:2px 8px;vertical-align:middle;margin-left:8px;letter-spacing:1px}
+  .sub{font-size:13px;color:#7A6A52;margin:0 0 22px}
+  h2{font-size:16px;border-left:4px solid var(--wait);padding-left:10px;margin:34px 0 12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
+  .row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+  .col{flex:1 1 300px;min-width:280px}
+  .cap{font-size:12px;color:#7A6A52;margin-top:8px}
+  ul,ol{margin:6px 0;padding-left:20px;font-size:13px}
+  .qs{background:#FFF8E6;border:1px solid #EAD9A8;border-radius:10px;padding:14px 18px}
+  .pick{border:2px solid var(--ok);border-radius:10px;position:relative}
+  .pick::after{content:"推薦";position:absolute;top:-10px;right:10px;background:var(--ok);
+               color:#fff;font-size:11px;padding:1px 8px;border-radius:4px}
+  .figbox{flex:1 1 240px;background:#FCF9F1;border:1px solid var(--line);border-radius:10px;
+          padding:12px;text-align:center;min-width:230px}
+  svg text{font-family:"Microsoft JhengHei","Noto Sans TC",system-ui,sans-serif}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
+  @keyframes floatY{0%,100%{transform:translateY(0)}50%{transform:translateY(-2.5px)}}
+  .pulse{animation:pulse 1.6s ease-in-out infinite}
+  .floaty{animation:floatY 1.9s ease-in-out infinite}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>AI 玩偶辦公樓 V4 — 純線條版＋小人重設計<span class="badge">DRAFT v4</span></h1>
+  <p class="sub">2026-08-11 · 契約不變（左緣・7%・透明・active-only）· 全部只用「線」：石墨墨稿，零填色（狀態點與身分點除外）· 小人改為建築師比例線稿人 · 每層佈局依方案 §4 重排成真正的辦公室</p>
+</header>
+
+<h2>1. 純線條版 — 放大檢視（實機約 135px 寬，此處 2 倍）</h2>
+<div class="card">
+<div class="row">
+<div class="col" style="flex:0 0 480px">
+
+<svg viewBox="0 0 230 322" width="460" role="img" aria-label="純線條透視樓板">
+  <defs>
+    <!-- 純線樓板底版（currentColor 決定墨色/白稿） -->
+    <g id="lp">
+      <polygon points="66,0 162,48 98,80 2,32" fill="none" stroke="currentColor" stroke-width=".9"/>
+      <path d="M162,48 L162,51.5 L98,83.5 L98,80 M98,83.5 L2,35.5 L2,32" fill="none" stroke="currentColor" stroke-width=".7"/>
+      <g opacity=".14" stroke="currentColor" stroke-width=".4">
+        <line x1="50" y1="8" x2="146" y2="56"/><line x1="34" y1="16" x2="130" y2="64"/><line x1="18" y1="24" x2="114" y2="72"/>
+        <line x1="90" y1="12" x2="26" y2="44"/><line x1="114" y1="24" x2="50" y2="56"/><line x1="138" y1="36" x2="74" y2="68"/>
+      </g>
+      <g fill="none" stroke="currentColor" stroke-width=".55">
+        <polygon points="114,70 122,74 118,76 110,72"/>
+        <polygon points="118,74.5 126,78.5 122,80.5 114,76.5"/>
+        <polygon points="122,79 130,83 126,85 118,81"/>
+      </g>
+    </g>
+    <!-- A案：建築線稿小人（高13px；胸口小色點=身分） -->
+    <g id="figA">
+      <ellipse cx="0" cy="-11.4" rx="1.25" ry="1.45" fill="none" stroke="currentColor" stroke-width=".55"/>
+      <path d="M-1.5,-9.9 L1.5,-9.9 L1.05,-4.9 L-1.05,-4.9 Z" fill="none" stroke="currentColor" stroke-width=".55"/>
+      <path d="M-1.5,-9.5 L-2.3,-6 M1.5,-9.5 L2.3,-6.2" fill="none" stroke="currentColor" stroke-width=".5"/>
+      <path d="M-.85,-4.9 L-1.25,0 M.85,-4.9 L1.25,0" fill="none" stroke="currentColor" stroke-width=".65"/>
+      <circle cx="0" cy="-8.1" r=".85" style="fill:var(--pc,#4A6FA5)"/>
+    </g>
+    <!-- A案走路＋文件 -->
+    <g id="figAw">
+      <ellipse cx="0" cy="-11.4" rx="1.25" ry="1.45" fill="none" stroke="currentColor" stroke-width=".55"/>
+      <path d="M-1.5,-9.9 L1.5,-9.9 L1.05,-4.9 L-1.05,-4.9 Z" fill="none" stroke="currentColor" stroke-width=".55"/>
+      <path d="M-1.5,-9.5 L-2.5,-6.4 M1.5,-9.5 L3.1,-7.6" fill="none" stroke="currentColor" stroke-width=".5"/>
+      <path d="M-.85,-4.9 L-2.3,0 M.85,-4.9 L2.5,-.2" fill="none" stroke="currentColor" stroke-width=".65"/>
+      <rect x="2.7" y="-8.7" width="3.1" height="2.3" fill="none" stroke="currentColor" stroke-width=".45"/>
+      <circle cx="0" cy="-8.1" r=".85" style="fill:var(--pc,#4A6FA5)"/>
+    </g>
+    <linearGradient id="deskbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F2EEE2"/><stop offset="1" stop-color="#E9E3D2"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="230" height="322" rx="8" fill="url(#deskbg)"/>
+  <text x="115" y="316" font-size="6.5" fill="#A89C86" text-anchor="middle">（米紙底＝示意；實際樓板外全透明）</text>
+
+  <g stroke="#A89C86" stroke-width=".7" stroke-dasharray="2 3" opacity=".55">
+    <line x1="70" y1="16" x2="70" y2="238"/>
+    <line x1="166" y1="64" x2="166" y2="286"/>
+    <line x1="102" y1="96" x2="102" y2="318"/>
+    <line x1="6"  y1="48" x2="6"  y2="270"/>
+  </g>
+  <!-- 電梯線框廂（沿右後導引線行進；方案 §10.4 共享移動佇列） -->
+  <g fill="none" stroke="#6E655A" class="floaty">
+    <rect x="161" y="96" width="10" height="12" rx="1" stroke-width=".6"/>
+    <path d="M166,96 l0,-5" stroke-width=".5"/>
+    <path d="M163,108 l0,2 M169,108 l0,2" stroke-width=".4" opacity=".6"/>
+    <circle cx="166" cy="99" r=".7" fill="#3D7A5A" stroke="none"/>
+  </g>
+
+  <!-- ══ OWNER（請示） ══ -->
+  <g transform="translate(4,14)" color="#6E655A">
+    <use href="#lp"/>
+    <!-- 白板（後牆） -->
+    <polygon points="68,-1 84,7 84,15 68,7" fill="none" stroke="currentColor" stroke-width=".6"/>
+    <line x1="71" y1="3.6" x2="80" y2="8.2" stroke="currentColor" stroke-width=".5" opacity=".7"/>
+    <line x1="71" y1="6.2" x2="78" y2="9.8" stroke="currentColor" stroke-width=".5" opacity=".7"/>
+    <path d="M71,14 l0,2 M81,13.5 l0,2.2" stroke="currentColor" stroke-width=".45"/>
+    <!-- 高背椅＋Owner 大桌（收件匣/文件就位） -->
+    <ellipse cx="100" cy="27" rx="2.6" ry="1.4" fill="none" stroke="currentColor" stroke-width=".5"/>
+    <path d="M101.8,26 l1.5,-2.8" stroke="currentColor" stroke-width=".5"/>
+    <polygon points="88,21 104,29 96,33 80,25" fill="none" stroke="currentColor" stroke-width=".7"/>
+    <path d="M80,25 l0,3 M96,33 l0,3 M104,29 l0,3" stroke="currentColor" stroke-width=".55"/>
+    <rect x="97" y="24.6" width="3" height="2" fill="none" stroke="currentColor" stroke-width=".4"/>
+    <rect x="88.4" y="23.4" width="2.8" height="1.8" fill="none" stroke="currentColor" stroke-width=".4"/>
+    <use href="#figA" transform="translate(107,39)" style="--pc:#3E4A5C"/>
+    <!-- 請示等候區：兩張等候椅＋排隊者（G 招牌動畫的舞台） -->
+    <ellipse cx="104" cy="59" rx="2.4" ry="1.3" fill="none" stroke="currentColor" stroke-width=".5"/>
+    <path d="M105.6,58.4 l1.3,-2.4" stroke="currentColor" stroke-width=".45"/>
+    <ellipse cx="96" cy="63" rx="2.4" ry="1.3" fill="none" stroke="currentColor" stroke-width=".5"/>
+    <path d="M97.6,62.4 l1.3,-2.4" stroke="currentColor" stroke-width=".45"/>
+    <g class="floaty">
+      <rect x="84" y="46" width="11" height="10" rx="2" fill="none" stroke="#C4A35A" stroke-width=".8"/>
+      <path d="M88,56 l2.4,3 l.8,-3 z" fill="none" stroke="#C4A35A" stroke-width=".7"/>
+      <text x="89.5" y="54" font-size="7" font-weight="bold" fill="#C4A35A" text-anchor="middle">?</text>
+    </g>
+    <use href="#figA" transform="translate(90,68)" style="--pc:#4A6FA5"/>
+    <text x="4" y="92" font-size="7" fill="currentColor" letter-spacing=".4">OWNER・請示</text>
+    <circle cx="52" cy="89.5" r="2" fill="#C4A35A" class="pulse"/>
+  </g>
+
+  <!-- ══ CODEX（working） ══ -->
+  <g transform="translate(4,118)" color="#6E655A">
+    <use href="#lp"/>
+    <!-- 白板（後牆） -->
+    <polygon points="100,11 118,20 118,28 100,19" fill="none" stroke="currentColor" stroke-width=".6"/>
+    <line x1="103" y1="15.4" x2="113" y2="20.4" stroke="currentColor" stroke-width=".5" opacity=".7"/>
+    <line x1="103" y1="17.8" x2="110" y2="21.3" stroke="currentColor" stroke-width=".5" opacity=".7"/>
+    <path d="M103,20.4 l0,2 M115,26 l0,2" stroke="currentColor" stroke-width=".45"/>
+    <!-- 檔案櫃×2（左後牆） -->
+    <g fill="none" stroke="currentColor">
+      <polygon points="62,-1 68,2 64,4 58,1" stroke-width=".55"/>
+      <path d="M58,1 l0,9 M64,4 l0,9 M68,2 l0,9 M58,10 L64,13 L68,11" stroke-width=".45"/>
+      <path d="M58,5.5 l6,3" stroke-width=".4" opacity=".7"/>
+      <polygon points="54,3 60,6 56,8 50,5" stroke-width=".55"/>
+      <path d="M50,5 l0,9 M56,8 l0,9 M60,6 l0,9 M50,14 L56,17 L60,15" stroke-width=".45"/>
+      <path d="M50,9.5 l6,3" stroke-width=".4" opacity=".7"/>
+    </g>
+    <!-- 入座人偶（先畫，讓桌沿蓋住腳＝入座） -->
+    <use href="#figA" transform="translate(82,20.5)" style="--pc:#4A6FA5"/>
+    <!-- SessionPod A：四席工作島（雙螢幕、對齊軸線） -->
+    <g fill="none" stroke="currentColor">
+      <polygon points="74,16 94,26 82,32 62,22" stroke-width=".7"/>
+      <line x1="68" y1="19" x2="88" y2="29" stroke-width=".45" opacity=".8"/>
+      <path d="M62,22 l0,4 M82,32 l0,4 M94,26 l0,4" stroke-width=".55"/>
+      <rect x="74.8" y="16.2" width="2.4" height="2.4" stroke-width=".45"/>
+      <rect x="84.8" y="21.2" width="2.4" height="2.4" stroke-width=".45"/>
+      <ellipse cx="92" cy="24.5" rx="2.2" ry="1.2" stroke-width=".45"/>
+      <ellipse cx="64" cy="30" rx="2.2" ry="1.2" stroke-width=".45"/>
+      <ellipse cx="74" cy="35" rx="2.2" ry="1.2" stroke-width=".45"/>
+    </g>
+    <!-- 單人 Pod（第二個 session，右） -->
+    <g fill="none" stroke="currentColor">
+      <polygon points="114,36 124,41 118,44 108,39" stroke-width=".6"/>
+      <path d="M108,39 l0,3 M118,44 l0,3 M124,41 l0,3" stroke-width=".5"/>
+      <rect x="113.6" y="34" width="2.4" height="2.4" stroke-width=".45"/>
+      <ellipse cx="109" cy="47.5" rx="2.2" ry="1.2" stroke-width=".45"/>
+    </g>
+    <!-- 經理桌（前緣，面向工作島） -->
+    <g fill="none" stroke="currentColor">
+      <polygon points="42,22 54,28 47,31.5 35,25.5" stroke-width=".7"/>
+      <path d="M35,25.5 l0,3.4 M47,31.5 l0,3.4 M54,28 l0,3.4" stroke-width=".55"/>
+      <rect x="43.2" y="23.2" width="2.8" height="1.8" stroke-width=".4"/>
+      <ellipse cx="37" cy="34.5" rx="2.2" ry="1.2" stroke-width=".45"/>
+    </g>
+    <!-- working 燈點＋筆觸 -->
+    <g stroke="#3D7A5A" stroke-width=".7" opacity=".8">
+      <line x1="78" y1="12.6" x2="81" y2="11.2"/><line x1="82" y1="14.6" x2="85" y2="13.2"/>
+    </g>
+    <circle cx="76" cy="17.4" r=".5" fill="#3D7A5A" class="pulse"/>
+    <!-- 經理立於桌旁；送件者自樓梯進場走向工作島 -->
+    <use href="#figA" transform="translate(52,37)" style="--pc:#4A6FA5"/>
+    <path d="M126,74 q-10,-6 -22,-8" fill="none" stroke="currentColor" stroke-width=".45" stroke-dasharray="1.6 2" opacity=".7"/>
+    <use href="#figAw" transform="translate(126,74)" style="--pc:#4A6FA5"/>
+    <text x="4" y="92" font-size="7" fill="currentColor" letter-spacing=".4">CODEX・工事</text>
+    <circle cx="54" cy="89.5" r="2" fill="#3D7A5A" class="pulse"/>
+  </g>
+
+  <!-- ══ CLAUDE（近期快照） ══ -->
+  <g transform="translate(4,222)" color="#6E655A">
+    <use href="#lp"/>
+    <!-- 審閱架×2（左後牆，書冊刻線） -->
+    <g fill="none" stroke="currentColor">
+      <polygon points="60,0 67,3.5 63,5.5 56,2" stroke-width=".55"/>
+      <path d="M56,2 l0,9 M63,5.5 l0,9 M67,3.5 l0,9 M56,11 L63,14.5 L67,12.5" stroke-width=".45"/>
+      <path d="M58,4.4 l0,3 M60.4,5.6 l0,3 M62.8,6.8 l0,3" stroke-width=".5"/>
+      <polygon points="51,4.5 58,8 54,10 47,6.5" stroke-width=".55"/>
+      <path d="M47,6.5 l0,9 M54,10 l0,9 M58,8 l0,9 M47,15.5 L54,19 L58,17" stroke-width=".45"/>
+      <path d="M49,8.9 l0,3 M51.4,10.1 l0,3 M53.8,11.3 l0,3" stroke-width=".5"/>
+    </g>
+    <!-- 審閱者（先畫，桌沿蓋腳＝入座） -->
+    <use href="#figA" transform="translate(82,28.5)" style="--pc:#6B8F71"/>
+    <!-- 審閱長桌＋對坐椅＋兩份文件 -->
+    <g fill="none" stroke="currentColor">
+      <polygon points="68,23 90,34 82,38 60,26" stroke-width=".7"/>
+      <path d="M60,26 l0,3.4 M82,38 l0,3.4 M90,34 l0,3.4" stroke-width=".55"/>
+      <rect x="69" y="24.6" width="3" height="2" stroke-width=".4"/>
+      <rect x="78" y="29.6" width="3" height="2" stroke-width=".4"/>
+      <ellipse cx="68" cy="39" rx="2.2" ry="1.2" stroke-width=".45"/>
+    </g>
+    <!-- 印章站（E 橘章退件／F 綠章通過的道具桌） -->
+    <g fill="none" stroke="currentColor">
+      <polygon points="108,37 115,40.5 110,43 103,39.5" stroke-width=".6"/>
+      <path d="M103,39.5 l0,3 M110,43 l0,3 M115,40.5 l0,3" stroke-width=".5"/>
+    </g>
+    <circle cx="107" cy="38.6" r=".8" fill="#C4A35A"/>
+    <circle cx="110.5" cy="40.2" r=".8" fill="#3D7A5A"/>
+    <text x="4" y="92" font-size="7" fill="currentColor" letter-spacing=".4">CLAUDE・審閱</text>
+    <circle cx="58" cy="89.5" r="2" fill="#8FA3B5"/>
+  </g>
+</svg>
+
+</div>
+<div class="col">
+  <b>純線條版的規則</b>
+  <ul>
+    <li><b>只有線</b>：樓板、家具、樓梯、小人全部石墨墨稿（0.4–0.9px），零填色、零淡彩。</li>
+    <li>唯二例外（功能色）：<b>狀態點</b>（綠/琥珀/紅/灰）與小人<b>胸口身分點</b>（provider 色 1px）；「?」請示標籤也是線框。</li>
+    <li>樓板厚度改用「雙緣線＋角落短豎線」表現，比填色更像手繪剖圖。</li>
+    <li><b>電梯保留</b>（方案 §10.4：電梯＝共享跨樓移動佇列、A/C/I 招牌動畫的載具）：右後導引線即電梯軌，線框小廂沿線行進；樓梯留作板上進出點綴。</li>
+    <li>家具＝透明線框（桌面菱形＋三支腳線＋立式小螢幕框）；描圖紙細格線保留。</li>
+    <li><b>動畫依既有設計方案</b>：A–J 十組招牌動畫與常態微動畫全數保留（SPEC §7/§8、V2 §7 明文「全部保留」），以線稿微縮演出；樓層過場採方案 §5 的「藍圖淡入＋吊車吊入＋滑入鎖定」——線稿版天生就是藍圖。對照表見第 5 節。</li>
+  </ul>
+  <p class="cap">對照：前稿 v3 是「淡彩版」（米白紙底＋淡色家具）。兩版幾何完全相同，只差上不上色——也可折衷：純線＋樓板 5–8% 紙白底（深色桌布上更穩）。</p>
+</div>
+</div>
+</div>
+
+<h2>2. 佈局解析 — 每層是一間「辦公室」（以 Codex 工事樓為例）</h2>
+<div class="card">
+<svg viewBox="0 0 470 235" width="100%" style="max-width:660px" role="img" aria-label="Codex 樓板辦公室佈局分區">
+  <g color="#6E655A" transform="translate(30,40) scale(1.9)">
+    <use href="#lp"/>
+    <polygon points="100,11 118,20 118,28 100,19" fill="none" stroke="currentColor" stroke-width=".6"/>
+    <line x1="103" y1="15.4" x2="113" y2="20.4" stroke="currentColor" stroke-width=".5" opacity=".7"/>
+    <line x1="103" y1="17.8" x2="110" y2="21.3" stroke="currentColor" stroke-width=".5" opacity=".7"/>
+    <path d="M103,20.4 l0,2 M115,26 l0,2" stroke="currentColor" stroke-width=".45"/>
+    <g fill="none" stroke="currentColor">
+      <polygon points="62,-1 68,2 64,4 58,1" stroke-width=".55"/>
+      <path d="M58,1 l0,9 M64,4 l0,9 M68,2 l0,9 M58,10 L64,13 L68,11" stroke-width=".45"/>
+      <path d="M58,5.5 l6,3" stroke-width=".4" opacity=".7"/>
+      <polygon points="54,3 60,6 56,8 50,5" stroke-width=".55"/>
+      <path d="M50,5 l0,9 M56,8 l0,9 M60,6 l0,9 M50,14 L56,17 L60,15" stroke-width=".45"/>
+      <path d="M50,9.5 l6,3" stroke-width=".4" opacity=".7"/>
+    </g>
+    <use href="#figA" transform="translate(82,20.5)" style="--pc:#4A6FA5"/>
+    <g fill="none" stroke="currentColor">
+      <polygon points="74,16 94,26 82,32 62,22" stroke-width=".7"/>
+      <line x1="68" y1="19" x2="88" y2="29" stroke-width=".45" opacity=".8"/>
+      <path d="M62,22 l0,4 M82,32 l0,4 M94,26 l0,4" stroke-width=".55"/>
+      <rect x="74.8" y="16.2" width="2.4" height="2.4" stroke-width=".45"/>
+      <rect x="84.8" y="21.2" width="2.4" height="2.4" stroke-width=".45"/>
+      <ellipse cx="92" cy="24.5" rx="2.2" ry="1.2" stroke-width=".45"/>
+      <ellipse cx="64" cy="30" rx="2.2" ry="1.2" stroke-width=".45"/>
+      <ellipse cx="74" cy="35" rx="2.2" ry="1.2" stroke-width=".45"/>
+    </g>
+    <g fill="none" stroke="currentColor">
+      <polygon points="114,36 124,41 118,44 108,39" stroke-width=".6"/>
+      <path d="M108,39 l0,3 M118,44 l0,3 M124,41 l0,3" stroke-width=".5"/>
+      <rect x="113.6" y="34" width="2.4" height="2.4" stroke-width=".45"/>
+      <ellipse cx="109" cy="47.5" rx="2.2" ry="1.2" stroke-width=".45"/>
+    </g>
+    <g fill="none" stroke="currentColor">
+      <polygon points="42,22 54,28 47,31.5 35,25.5" stroke-width=".7"/>
+      <path d="M35,25.5 l0,3.4 M47,31.5 l0,3.4 M54,28 l0,3.4" stroke-width=".55"/>
+      <rect x="43.2" y="23.2" width="2.8" height="1.8" stroke-width=".4"/>
+      <ellipse cx="37" cy="34.5" rx="2.2" ry="1.2" stroke-width=".45"/>
+    </g>
+    <g stroke="#3D7A5A" stroke-width=".7" opacity=".8">
+      <line x1="78" y1="12.6" x2="81" y2="11.2"/><line x1="82" y1="14.6" x2="85" y2="13.2"/>
+    </g>
+    <circle cx="76" cy="17.4" r=".5" fill="#3D7A5A" class="pulse"/>
+    <use href="#figA" transform="translate(52,37)" style="--pc:#4A6FA5"/>
+    <path d="M126,74 q-10,-6 -22,-8" fill="none" stroke="currentColor" stroke-width=".45" stroke-dasharray="1.6 2" opacity=".7"/>
+    <use href="#figAw" transform="translate(126,74)" style="--pc:#4A6FA5"/>
+  </g>
+  <!-- 分區框＋編號 -->
+  <g fill="none" stroke="#C4A35A" stroke-dasharray="4 3" stroke-width="1">
+    <rect x="142" y="55" width="74" height="57" rx="6"/>
+    <rect x="227" y="99" width="46" height="40" rx="6"/>
+    <rect x="90" y="78" width="50" height="37" rx="6"/>
+    <rect x="214" y="55" width="46" height="44" rx="6"/>
+    <rect x="115" y="32" width="50" height="44" rx="6"/>
+    <rect x="225" y="148" width="60" height="58" rx="6"/>
+  </g>
+  <g font-size="9" font-weight="bold" text-anchor="middle">
+    <circle cx="146" cy="59" r="6.5" fill="#C4A35A"/><text x="146" y="62" fill="#fff">1</text>
+    <circle cx="231" cy="103" r="6.5" fill="#C4A35A"/><text x="231" y="106" fill="#fff">2</text>
+    <circle cx="94" cy="82" r="6.5" fill="#C4A35A"/><text x="94" y="85" fill="#fff">3</text>
+    <circle cx="218" cy="59" r="6.5" fill="#C4A35A"/><text x="218" y="62" fill="#fff">4</text>
+    <circle cx="119" cy="36" r="6.5" fill="#C4A35A"/><text x="119" y="39" fill="#fff">5</text>
+    <circle cx="229" cy="152" r="6.5" fill="#C4A35A"/><text x="229" y="155" fill="#fff">6</text>
+  </g>
+  <g font-size="11" fill="#33291D">
+    <text x="322" y="48" font-weight="bold" font-size="12">佈局分區</text>
+    <text x="322" y="70">① SessionPod 工作島（4席・雙螢幕）</text>
+    <text x="322" y="92">② 單人 Pod（第 2 個 session）</text>
+    <text x="322" y="114">③ 經理桌（面向團隊）</text>
+    <text x="322" y="136">④ 白板（後牆）</text>
+    <text x="322" y="158">⑤ 檔案櫃×2（後牆）</text>
+    <text x="322" y="180">⑥ 走道 → 樓梯進出</text>
+  </g>
+</svg>
+<ul style="margin-top:10px">
+  <li><b>佈局依方案，不是我發明</b>：SPEC:126-128 §4.1（每層畫面基準≈2 位經理＋8 位部屬）、SPEC:144-147 §4.3（同 Provider <b>每個 session 一張專案桌＝SessionPod</b>、絕不合併）、SPEC:164-173 §4.5（Codex 樓「專案桌 A/B」測例）——工作島數量隨真實 session 數增減。</li>
+  <li><b>辦公室文法</b>：高家具靠後牆（白板、檔案櫃/審閱架）→ 中段軸線對齊的工作島 → 前緣留走道通樓梯；經理桌面向團隊。散落道具＝作廢。</li>
+  <li><b>Owner 室</b>＝辦公大桌＋收件匣＋高背椅＋白板＋請示等候椅×2（SPEC:131-137 頂樓「Owner 辦公室、請示等候區、Owner 收件匣」）。<b>Claude 審閱樓</b>＝審閱長桌＋審閱架×2＋印章站（E/F 印章動畫道具就位）。</li>
+</ul>
+</div>
+
+<h2>3. 深淺桌布對比（自動墨稿／白稿）</h2>
+<div class="card">
+<div class="row">
+  <div class="col" style="flex:1 1 300px;text-align:center">
+    <svg viewBox="0 0 230 130" width="100%" style="max-width:330px">
+      <rect x="0" y="0" width="230" height="130" rx="8" fill="#EFEAE0"/>
+      <g transform="translate(30,18)" color="#6E655A">
+        <use href="#lp"/>
+        <use href="#figA" transform="translate(80,40)" style="--pc:#4A6FA5"/>
+        <circle cx="30" cy="10" r="2" fill="#3D7A5A" class="pulse"/>
+      </g>
+      <text x="115" y="122" font-size="8" fill="#7A6A52" text-anchor="middle">淺色桌布 → 石墨墨稿 #6E655A</text>
+    </svg>
+  </div>
+  <div class="col" style="flex:1 1 300px;text-align:center">
+    <svg viewBox="0 0 230 130" width="100%" style="max-width:330px">
+      <rect x="0" y="0" width="230" height="130" rx="8" fill="#2A3644"/>
+      <g transform="translate(30,18)" color="#EDE8DA">
+        <use href="#lp"/>
+        <use href="#figA" transform="translate(80,40)" style="--pc:#7FA3D8"/>
+        <circle cx="30" cy="10" r="2" fill="#5BBF8A" class="pulse"/>
+      </g>
+      <text x="115" y="122" font-size="8" fill="#C9C2B2" text-anchor="middle">深色桌布 → 自動反白「白稿」#EDE8DA</text>
+    </svg>
+  </div>
+</div>
+<p class="cap">實作：取樓板背後桌布區域平均亮度 → 亮度高用墨稿、低用白稿（含狀態色同步提亮）；使用者也可手動鎖定。純線版在任意桌布上的可讀性靠這個機制保證。</p>
+</div>
+
+<h2>4. 小人重設計 — 三個候選（Owner 已定案：A）</h2>
+<div class="card">
+<p style="font-size:13px;margin:0 0 10px">你說得對，方頭積木人在這個尺度怎麼看都不順眼——頭太大、太卡通，跟建築線稿打架。你參考圖裡用的是<b>建築師比例小人</b>（細身、小頭、7 頭身），這才是同一套語言。三案如下：</p>
+<div class="row">
+  <div class="figbox pick">
+    <svg viewBox="0 0 240 120" width="100%">
+      <line x1="12" y1="96" x2="228" y2="96" stroke="#D8C9A8"/>
+      <g color="#6E655A">
+        <use href="#figA" transform="translate(30,96)" style="--pc:#4A6FA5"/>
+        <use href="#figA" transform="translate(76,96) scale(2.5)" style="--pc:#6B8F71"/>
+        <use href="#figAw" transform="translate(158,96) scale(5)" style="--pc:#B8860B"/>
+      </g>
+      <text x="30" y="110" font-size="8" fill="#7A6A52" text-anchor="middle">×1（13px）</text>
+      <text x="76" y="110" font-size="8" fill="#7A6A52" text-anchor="middle">×2.5</text>
+      <text x="158" y="110" font-size="8" fill="#7A6A52" text-anchor="middle">×5（走路＋文件）</text>
+    </svg>
+    <div style="font-size:13px;margin-top:6px"><b>A・建築線稿小人</b></div>
+    <div class="cap">細身 7 頭身、橢圓小頭、錐形軀幹線框；胸口 1px 色點＝身分。與參考圖同語彙、13px 依然優雅。</div>
+  </div>
+  <div class="figbox">
+    <svg viewBox="0 0 240 120" width="100%">
+      <line x1="12" y1="96" x2="228" y2="96" stroke="#D8C9A8"/>
+      <g fill="none" stroke="#6E655A">
+        <g transform="translate(30,96)">
+          <rect x="-1.7" y="-11.8" width="3.4" height="2.9" rx=".9" stroke-width=".5"/>
+          <path d="M-2.2,-8.4 L2.2,-8.4 L1.7,-3.9 L-1.7,-3.9 Z" stroke-width=".5"/>
+          <path d="M-1.1,-3.9 L-1.3,0 M1.1,-3.9 L1.3,0" stroke-width=".65"/>
+          <path d="M-2.2,-8 L-2.9,-5 M2.2,-8 L2.9,-5.2" stroke-width=".5"/>
+        </g>
+        <g transform="translate(76,96) scale(2.5)">
+          <rect x="-1.7" y="-11.8" width="3.4" height="2.9" rx=".9" stroke-width=".5"/>
+          <path d="M-2.2,-8.4 L2.2,-8.4 L1.7,-3.9 L-1.7,-3.9 Z" stroke-width=".5"/>
+          <path d="M-1.1,-3.9 L-1.3,0 M1.1,-3.9 L1.3,0" stroke-width=".65"/>
+          <path d="M-2.2,-8 L-2.9,-5 M2.2,-8 L2.9,-5.2" stroke-width=".5"/>
+          <circle cx="0" cy="-6.6" r=".8" fill="#8B5A6B" stroke="none"/>
+        </g>
+        <g transform="translate(158,96) scale(5)">
+          <rect x="-1.7" y="-11.8" width="3.4" height="2.9" rx=".9" stroke-width=".45"/>
+          <path d="M-2.2,-8.4 L2.2,-8.4 L1.7,-3.9 L-1.7,-3.9 Z" stroke-width=".45"/>
+          <path d="M-1.1,-3.9 L-1.3,0 M1.1,-3.9 L1.3,0" stroke-width=".55"/>
+          <path d="M-2.2,-8 L-2.9,-5 M2.2,-8 L2.9,-5.2" stroke-width=".45"/>
+          <circle cx="0" cy="-6.6" r=".8" fill="#4A6FA5" stroke="none"/>
+        </g>
+      </g>
+      <text x="30" y="110" font-size="8" fill="#7A6A52" text-anchor="middle">×1（12px）</text>
+      <text x="76" y="110" font-size="8" fill="#7A6A52" text-anchor="middle">×2.5</text>
+      <text x="158" y="110" font-size="8" fill="#7A6A52" text-anchor="middle">×5</text>
+    </svg>
+    <div style="font-size:13px;margin-top:6px"><b>B・積木輪廓小人（修身版）</b></div>
+    <div class="cap">保留「積木人」概念但改 4 頭身、頭縮小、純線框。仍偏玩具感，微尺度下頭部搶眼。</div>
+  </div>
+  <div class="figbox">
+    <svg viewBox="0 0 240 120" width="100%">
+      <line x1="12" y1="96" x2="228" y2="96" stroke="#D8C9A8"/>
+      <g fill="#6E655A">
+        <g transform="translate(30,96)">
+          <circle cx="0" cy="-11" r="1.5"/>
+          <path d="M-2,-9.2 L2,-9.2 L1.5,-4.4 L2.5,0 L1.1,0 L.5,-3.4 L-.5,-3.4 L-1.1,0 L-2.5,0 L-1.5,-4.4 Z"/>
+        </g>
+        <g transform="translate(76,96) scale(2.5)">
+          <circle cx="0" cy="-11" r="1.5"/>
+          <path d="M-2,-9.2 L2,-9.2 L1.5,-4.4 L2.5,0 L1.1,0 L.5,-3.4 L-.5,-3.4 L-1.1,0 L-2.5,0 L-1.5,-4.4 Z"/>
+          <circle cx="0" cy="-7" r=".8" fill="#B8860B"/>
+        </g>
+        <g transform="translate(158,96) scale(5)">
+          <circle cx="0" cy="-11" r="1.5"/>
+          <path d="M-2,-9.2 L2,-9.2 L1.5,-4.4 L2.5,0 L1.1,0 L.5,-3.4 L-.5,-3.4 L-1.1,0 L-2.5,0 L-1.5,-4.4 Z"/>
+          <circle cx="0" cy="-7" r=".8" fill="#6B8F71"/>
+        </g>
+      </g>
+      <text x="30" y="110" font-size="8" fill="#7A6A52" text-anchor="middle">×1（12px）</text>
+      <text x="76" y="110" font-size="8" fill="#7A6A52" text-anchor="middle">×2.5</text>
+      <text x="158" y="110" font-size="8" fill="#7A6A52" text-anchor="middle">×5</text>
+    </svg>
+    <div style="font-size:13px;margin-top:6px"><b>C・石墨剪影小人</b></div>
+    <div class="cap">實心剪影、辨識度最高、在雜亂桌布上最穩；但「線稿感」略減，畫出動畫較無筆觸味。</div>
+  </div>
+</div>
+<p class="cap" style="margin-top:12px">我的推薦：<b>A 為主</b>（與參考圖、線稿樓板同語言），深色/雜亂桌布自動加粗 0.15px 或切 C 剪影備援。三案皆為原創、與任何品牌人偶無涉（無凸粒/C 型手/圓柱頭問題——連「積木方頭」都退場了）。IP 檢核照舊全過。</p>
+</div>
+
+<h2>5. 動畫 — 依既有設計方案（不是新發明）</h2>
+<div class="card">
+<p style="font-size:13px;margin:0 0 10px">你指正得對：動畫方案 repo 裡本來就寫好了。以下是<b>方案原文 → 7% 線稿呈現</b>的對照；方案內容一條不刪（SPEC §7、V2 §7.2 明文「第一版招牌動畫全部保留」），只做微縮與線稿化。</p>
+<table>
+  <tr><th style="width:31%">設計方案出處（file:line）</th><th>方案內容</th><th>7% 線稿呈現</th></tr>
+  <tr><td>SPEC:245-287 §7＋V2:144-155 §7.2<br>A–J 十組招牌動畫「全部保留」</td><td>A 指派進場／B 金夾板交接／C 跨團隊搭電梯集合／D 抓蟲玻璃罐／E 橘章 REVISE 退件／F 綠章緞帶／G 請示敲門排隊／H 金鑰授權／I 多人交件差點相撞／J 成果逐層傳遞</td><td>全數保留：13px 線稿小人＋文件小卡＋印章色點＋「?」紙標籤微縮演出；同時最多 1 個主演出（§10.4 佇列），其餘排隊</td></tr>
+  <tr><td>V2:136-142 §7.1 常態五類<br>（每項含準備與收尾動作）</td><td>鍵盤工作台／讀文件翻頁／白板貼卡退一步看／文件傳遞交件回座／巡視跑腿</td><td>活躍樓板持續播放（hero 圖 Codex 板＝打字＋送件示範）；「有準備、有收尾」原則照抄</td></tr>
+  <tr><td>SPEC:183-208 §5.1-5.2＋V2:9 §0</td><td>新樓層施工：吊車吊入模組、滑入鎖定、剪綵進駐；低動態＝「藍圖淡入、樓層滑入、燈光亮起」三段</td><td>線稿版天生是藍圖：小線框吊車吊入樓板 → 滑入插位 → 小人進場（下方分鏡）；「線稿畫出」＝藍圖淡入的墨稿化</td></tr>
+  <tr><td>SPEC:212-216 §5.3＋V2:9 §0</td><td>收樓：收拾文件、關燈拆牌、整片收起；不補播離線動畫</td><td>內裝逐筆擦除 → 樓板收起 → 其餘樓板合攏</td></tr>
+  <tr><td>SPEC:355-358 §9.1／G</td><td>請示：拿公事包上樓、敲門三下、門外排隊；勿擾模式只留門燈紅點</td><td>小人沿電梯導引線上 Owner 板、門前排隊＋「?」紙標籤（hero 圖 Owner 板示範）</td></tr>
+  <tr><td>SPEC:396-413 §10.3-10.4</td><td>P0–P4 優先級；同時 6–8 位移／低動態 2–3；招牌動畫單一主演出佇列；閒置降 5FPS 或休眠；電梯＝共享跨樓移動佇列</td><td>參數照抄不變；電梯廂＝右後導引線上的線框小廂（hero 圖示範）</td></tr>
+  <tr><td>SPEC:517-523 真實性閘</td><td>completed 只由明確事件觸發；presence-only 不得播工作動畫；unknown 凍結＋灰問號</td><td>照抄不變</td></tr>
+  <tr><td>SPEC:323-330 §8.3 閒置日常</td><td>蓋毯子、追迴紋針、電梯客滿、深夜值班燈</td><td>P4 級、20–40 秒最多一則（§10.4）；7% 尺度下以最簡線稿演出，放大模式才有細節</td></tr>
+  <tr><td style="color:#8A6614"><b>方案缺口（文件未定）</b></td><td>三份文件皆無動畫時長/幀數/easing、無正式「事件→動畫」映射表（映射在 code，Stage3 審查 PASS）</td><td>由本稿補：畫出 0.8s／滑入 0.4s／進場 0.3s（標記為新增參數，待你認可）</td></tr>
+</table>
+<div class="frames" style="margin-top:14px">
+  <div class="frame">
+    <svg viewBox="0 0 150 116" width="168">
+      <rect x="0" y="0" width="150" height="116" rx="8" fill="#F7F3E8"/>
+      <g color="#6E655A" transform="translate(-8,30) scale(.9)">
+        <polygon points="66,0 162,48 98,80 2,32" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="4 3" opacity=".7"/>
+      </g>
+      <path d="M112,34 l14,-14 M120,34 l8,-8" stroke="#9A907F" stroke-width="1.1"/>
+      <path d="M126,20 l6,-2 -2,6 z" fill="#9A907F"/>
+      <text x="75" y="108" font-size="8.5" fill="#7A6A52" text-anchor="middle">藍圖淡入（SPEC:206 低動態三段之一）</text>
+    </svg>
+    <div style="font-size:13px"><b>① 藍圖畫出</b></div>
+  </div>
+  <div class="frame">
+    <svg viewBox="0 0 150 116" width="168">
+      <rect x="0" y="0" width="150" height="116" rx="8" fill="#F7F3E8"/>
+      <g stroke="#6E655A" fill="none">
+        <path d="M18,14 l0,44 M18,14 l58,0 M70,14 l0,10" stroke-width="1"/>
+        <path d="M14,58 l8,0" stroke-width="1.2"/>
+        <path d="M70,24 l0,6 l-3,3 l6,0 z" stroke-width=".7"/>
+      </g>
+      <g color="#6E655A" transform="translate(28,44) scale(.62)">
+        <polygon points="66,0 162,48 98,80 2,32" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      </g>
+      <path d="M36,96 l-8,6 M120,72 l8,6" stroke="#C4A35A" stroke-width="1.2" fill="none"/>
+      <text x="75" y="108" font-size="8.5" fill="#7A6A52" text-anchor="middle">玩具吊車吊入＋滑入鎖定（SPEC:187-188）</text>
+    </svg>
+    <div style="font-size:13px"><b>② 吊入插位</b></div>
+  </div>
+  <div class="frame">
+    <svg viewBox="0 0 150 116" width="168">
+      <rect x="0" y="0" width="150" height="116" rx="8" fill="#F7F3E8"/>
+      <g color="#6E655A" transform="translate(-8,32)">
+        <use href="#lp" transform="scale(.9)"/>
+        <polygon points="52,16 62,21 56,24 46,19" fill="none" stroke="currentColor" stroke-width=".6" stroke-dasharray="2 1.6" opacity=".8"/>
+        <use href="#figAw" transform="translate(104,66)" style="--pc:#4A6FA5"/>
+      </g>
+      <text x="75" y="108" font-size="8.5" fill="#7A6A52" text-anchor="middle">家具逐筆畫出、小人抱箱進駐（SPEC:190）</text>
+    </svg>
+    <div style="font-size:13px"><b>③ 進駐</b></div>
+  </div>
+  <div class="frame">
+    <svg viewBox="0 0 150 116" width="168">
+      <rect x="0" y="0" width="150" height="116" rx="8" fill="#F7F3E8"/>
+      <g color="#6E655A" transform="translate(-8,32)">
+        <use href="#lp" transform="scale(.9)"/>
+        <polygon points="52,16 62,21 56,24 46,19" fill="none" stroke="currentColor" stroke-width=".6"/>
+        <use href="#figA" transform="translate(43,22)" style="--pc:#4A6FA5"/>
+        <g stroke="#3D7A5A" stroke-width=".8" opacity=".8"><line x1="58" y1="10" x2="61" y2="8.6"/><line x1="62" y1="12" x2="65" y2="10.6"/></g>
+      </g>
+      <circle cx="130" cy="16" r="4" fill="#3D7A5A" class="pulse"/>
+      <text x="75" y="108" font-size="8.5" fill="#7A6A52" text-anchor="middle">常態微動畫開播（V2:136-142 §7.1）</text>
+    </svg>
+    <div style="font-size:13px"><b>④ 開工</b></div>
+  </div>
+</div>
+<p class="cap">收樓＝反向播放（§5.3）；G 請示、E/F 印章退回/通過、I 多人交件等招牌演出在活躍板間依 P0–P2 佇列輪播。</p>
+</div>
+
+<h2>6. 決議與待確認</h2>
+<div class="qs">
+  <p style="font-size:14px;margin:2px 0"><b>已定案（Owner 2026-08-11）</b>：① 純線條版　② 小人＝A 建築線稿小人　③ 深淺桌布自動墨稿／白稿　④ 動畫時長參數 0.8／0.4／0.3s。</p>
+  <p style="font-size:14px;margin:8px 0 2px"><b>唯一待確認</b>：⑤ 辦公室佈局已重排——後牆高家具、SessionPod 工作島、經理桌面向團隊、Owner 室請示等候區、走道通樓梯（見第 1、2 節）。這樣的「辦公室」OK 嗎？</p>
+  <p style="font-size:13px;margin:6px 0 0">⑤ OK 即全部規格凍結，交 Opus 5 實作。</p>
+</div>
+
+<p class="cap" style="margin-top:26px">修訂：v4.1 依 Owner 五點決議——純線條版＋A 小人定案；辦公室佈局依方案 SPEC §4.1/§4.3/§4.5 重排（工作島 SessionPod／經理桌／後牆高家具／請示等候區／走道，散落道具作廢）；動畫逐條對齊既有方案（SPEC §5/§7/§8/§9.1/§10、V2 §7）。v3 淡彩稿保留於 artifacts 供對照。全部視覺元素原創。</p>
+
+</div>
+</body>
+</html>
