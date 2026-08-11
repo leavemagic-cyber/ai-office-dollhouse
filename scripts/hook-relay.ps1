@@ -31,6 +31,69 @@ function Get-AiOfficeHash {
     finally { $sha.Dispose() }
 }
 
+function Get-AiOfficeSubagentStopOutcome {
+    param($Payload)
+    # A stop hook alone does not prove success. Only forward a terminal event
+    # when the structured payload supplies an explicit result; otherwise the
+    # UI will degrade the agent to unknown instead of showing a false delivery.
+    # An explicit cancellation is neutral even if a provider also includes an
+    # error-shaped diagnostic field for that cancellation.
+    $status = ([string](Get-AiOfficeValue $Payload @('status', 'outcome', 'result', 'state', 'stop_reason', 'stopReason', 'reason')) -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+    if ($status -in @('cancelled', 'canceled', 'aborted', 'interrupted', 'stopped', 'killed', 'terminated', 'cancel', 'abort', 'interrupt', 'stop', 'kill', 'terminate')) { return 'agent_cancelled' }
+    if ($status -in @('success', 'succeeded', 'completed', 'complete', 'finished', 'done', 'ok')) { return 'agent_finished' }
+    if ($status -in @('failed', 'failure', 'error', 'errored', 'timeout', 'timedout')) { return 'agent_failed' }
+
+    foreach ($name in @('error', 'error_message', 'errorMessage', 'failure_reason', 'failureReason')) {
+        $rawError = Get-AiOfficeValue $Payload @($name)
+        if ($null -eq $rawError) { continue }
+        if ($rawError -is [bool]) {
+            if ($rawError) { return 'agent_failed' }
+            continue
+        }
+        $errorText = ([string]$rawError).Trim()
+        if ($errorText -and $errorText -notmatch '^(?i:false|none|null|0)$') { return 'agent_failed' }
+    }
+
+    $successText = ([string](Get-AiOfficeValue $Payload @('success', 'succeeded', 'is_success', 'isSuccess'))).Trim().ToLowerInvariant()
+    if ($successText -in @('true', '1', 'yes')) { return 'agent_finished' }
+    if ($successText -in @('false', '0', 'no')) { return 'agent_failed' }
+
+    $exitCodeRaw = Get-AiOfficeValue $Payload @('exit_code', 'exitCode')
+    $exitCode = 0
+    if ($null -ne $exitCodeRaw -and [int]::TryParse([string]$exitCodeRaw, [ref]$exitCode)) {
+        if ($exitCode -eq 0) { return 'agent_finished' }
+        return 'agent_failed'
+    }
+
+    return ''
+}
+
+function Add-AiOfficeEventLine {
+    param([string]$Path, [string]$Line)
+    $encoding = [Text.UTF8Encoding]::new($false)
+    for ($attempt = 0; $attempt -lt 4; $attempt += 1) {
+        $stream = $null
+        $writer = $null
+        try {
+            $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+            $writer = [IO.StreamWriter]::new($stream, $encoding)
+            $writer.Write($Line)
+            $writer.Flush()
+            return $true
+        }
+        catch [IO.IOException] {
+            if ($attempt -eq 3) { return $false }
+            Start-Sleep -Milliseconds (15 * ($attempt + 1))
+        }
+        catch { return $false }
+        finally {
+            if ($null -ne $writer) { $writer.Dispose() }
+            elseif ($null -ne $stream) { $stream.Dispose() }
+        }
+    }
+    return $false
+}
+
 try {
     # Grok loads Claude-compatible hooks. The provider guard prevents a Grok event
     # from being recorded as Claude when both integrations are installed.
@@ -86,7 +149,7 @@ try {
         'afteragent' { 'turn_completed' }
         'sessionend' { 'session_stopped' }
         'subagentstart' { 'agent_spawned' }
-        'subagentstop' { 'agent_finished' }
+        'subagentstop' { Get-AiOfficeSubagentStopOutcome $payload }
         'pretooluse' { 'tool_started' }
         'beforetool' { 'tool_started' }
         'posttooluse' { 'tool_finished' }
@@ -146,7 +209,7 @@ try {
         Move-Item -LiteralPath $eventPath -Destination $archivePath -Force
     }
     $line = ($officeEvent | ConvertTo-Json -Compress -Depth 8) + [Environment]::NewLine
-    [IO.File]::AppendAllText($eventPath, $line, [Text.UTF8Encoding]::new($false))
+    [void](Add-AiOfficeEventLine $eventPath $line)
 }
 catch {
     # Hooks must always fail open and must never expose raw payloads in stderr.

@@ -11,5 +11,15 @@ coverage/
 .DS_Store
 Thumbs.db
 *.user.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.cer
+*.crt
+*.der
 release/
 scripts/relay/*.exe

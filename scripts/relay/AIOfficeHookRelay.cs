@@ -69,6 +69,113 @@ internal static class AIOfficeHookRelay
         return result.ToString();
     }
 
+    private static bool HasFailureDetails(Dictionary<string, object> payload)
+    {
+        string[] names = { "error", "error_message", "errorMessage", "failure_reason", "failureReason" };
+        foreach (string name in names)
+        {
+            object value;
+            if (!payload.TryGetValue(name, out value) || value == null) continue;
+            if (value is bool)
+            {
+                if ((bool)value) return true;
+                continue;
+            }
+            string text = Convert.ToString(value, CultureInfo.InvariantCulture);
+            if (!string.IsNullOrWhiteSpace(text) &&
+                !string.Equals(text, "false", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(text, "none", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(text, "null", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(text, "0", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    private static bool TryBooleanValue(Dictionary<string, object> payload, out bool value, params string[] names)
+    {
+        object raw = GetValue(payload, names);
+        if (raw is bool)
+        {
+            value = (bool)raw;
+            return true;
+        }
+        string text = raw == null ? string.Empty : Convert.ToString(raw, CultureInfo.InvariantCulture);
+        if (bool.TryParse(text, out value)) return true;
+        if (string.Equals(text, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "yes", StringComparison.OrdinalIgnoreCase))
+        {
+            value = true;
+            return true;
+        }
+        if (string.Equals(text, "0", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "no", StringComparison.OrdinalIgnoreCase))
+        {
+            value = false;
+            return true;
+        }
+        value = false;
+        return false;
+    }
+
+    private static bool TryExitCode(Dictionary<string, object> payload, out int exitCode)
+    {
+        object raw = GetValue(payload, "exit_code", "exitCode");
+        if (raw == null)
+        {
+            exitCode = 0;
+            return false;
+        }
+        return int.TryParse(Convert.ToString(raw, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out exitCode);
+    }
+
+    private static string MapSubagentStop(Dictionary<string, object> payload)
+    {
+        // A stop hook alone is not evidence of a successful delivery.  Only
+        // emit a terminal animation when the hook payload gives an outcome;
+        // otherwise the office state will age out as unknown rather than lie.
+        // An explicit cancellation is neutral even if a provider also includes
+        // an error-shaped diagnostic field for that cancellation.
+        string status = NormalizeHook(TextValue(payload, "status", "outcome", "result", "state", "stop_reason", "stopReason", "reason"));
+        switch (status)
+        {
+            case "cancelled":
+            case "canceled":
+            case "aborted":
+            case "interrupted":
+            case "stopped":
+            case "killed":
+            case "terminated":
+            case "cancel":
+            case "abort":
+            case "interrupt":
+            case "stop":
+            case "kill":
+            case "terminate": return "agent_cancelled";
+            case "success":
+            case "succeeded":
+            case "completed":
+            case "complete":
+            case "finished":
+            case "done":
+            case "ok": return "agent_finished";
+            case "failed":
+            case "failure":
+            case "error":
+            case "errored":
+            case "timeout":
+            case "timedout": return "agent_failed";
+        }
+
+        if (HasFailureDetails(payload)) return "agent_failed";
+
+        bool success;
+        if (TryBooleanValue(payload, out success, "success", "succeeded", "is_success", "isSuccess"))
+            return success ? "agent_finished" : "agent_failed";
+
+        int exitCode;
+        if (TryExitCode(payload, out exitCode)) return exitCode == 0 ? "agent_finished" : "agent_failed";
+
+        return string.Empty;
+    }
+
     private static string MapEvent(string hook, Dictionary<string, object> payload)
     {
         switch (hook)
@@ -80,7 +187,7 @@ internal static class AIOfficeHookRelay
             case "afteragent": return "turn_completed";
             case "sessionend": return "session_stopped";
             case "subagentstart": return "agent_spawned";
-            case "subagentstop": return "agent_finished";
+            case "subagentstop": return MapSubagentStop(payload);
             case "pretooluse": return "tool_started";
             case "beforetool": return "tool_started";
             case "posttooluse": return "tool_finished";

@@ -23,7 +23,15 @@ const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 assert.equal(config.logging.enabled, false, 'runtime logging must stay disabled');
 assert.equal(config.logging.writeToLogFile, false, 'runtime log files must stay disabled');
 assert.equal(config.enableNativeAPI, true);
+assert.equal(config.modes.window.transparent, true, 'desktop overlay must remain transparent');
+assert.equal(config.modes.window.hidden, true, 'desktop overlay must start hidden until useful work exists');
+assert.equal(config.modes.window.useLogicalPixels, true, 'desktop overlay sizing must remain DPI-aware');
+assert.equal(config.modes.window.alwaysOnTop, true, 'tiny useful-work overlay must remain visible above the working app');
 assert.ok(config.nativeAllowList.includes('os.execCommand'));
+assert.ok(config.nativeAllowList.includes('filesystem.readBinaryFile'), 'bounded event reads require binary slice access');
+assert.ok(config.nativeAllowList.includes('filesystem.remove'), 'single-instance lock requires scoped cleanup');
+assert.ok(config.nativeAllowList.includes('filesystem.move'), 'shared model replacement requires scoped rename access');
+assert.equal(config.nativeAllowList.includes('filesystem.*'), false, 'filesystem access must remain method-scoped');
 assert.equal(config.nativeAllowList.includes('net.*'), false);
 assert.equal(packageJson.private, true);
 assert.equal(packageJson.license, 'MIT');
