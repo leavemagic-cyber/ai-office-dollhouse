@@ -115,20 +115,20 @@ test('plate keeps the frozen 7% overlay proportions', () => {
 });
 
 test('floors grow one desk bank per live SessionPod', () => {
-  const screens = (layout) => layout.items.filter((item) => item.kind === 'island');
-  const pods = (layout) => new Set(layout.items.filter((item) => item.kind === 'island' && Number.isInteger(item.pod)).map((item) => item.pod));
-  assert.equal(screens(officeLayout('codex', 1)).length, 1);
-  const many = screens(officeLayout('codex', 3)).length;
+  const rows = (layout) => [...new Set(layout.items.filter((item) => item.kind === 'desk' && Number.isInteger(item.pod)).map((item) => item.pod))];
+  const pods = (layout) => new Set(layout.items.filter((item) => item.kind === 'desk' && Number.isInteger(item.pod)).map((item) => item.pod));
+  assert.equal(rows(officeLayout('codex', 1)).length, 1);
+  const many = rows(officeLayout('codex', 3)).length;
   assert.ok(many >= 2, 'more pods open more desk banks');
   assert.deepEqual([...pods(officeLayout('codex', 3))], [...Array(many).keys()]);
   // Every seat in a bank gets its own workstation desk and task chair.
   const triple = officeLayout('codex', 3);
   const bankSeatCount = triple.seats.filter((seat) => !seat.role).length;
-  // One bench per island now, not one table per seat.
-  assert.equal(triple.items.filter((item) => item.kind === 'island').length, many);
+  // One desk per person, one screen per row.
+  assert.equal(triple.items.filter((item) => item.kind === 'desk' && Number.isInteger(item.pod)).length, bankSeatCount);
   assert.ok(triple.items.filter((item) => item.kind === 'chair' && item.task).length >= bankSeatCount);
-  const centres = screens(triple).map((item) => `${item.gx}:${item.gy}`);
-  assert.equal(new Set(centres).size, many, 'each bank sits in its own place');
+  const centres = triple.items.filter((item) => item.kind === 'desk' && Number.isInteger(item.pod)).map((item) => `${item.gx}:${item.gy}`);
+  assert.equal(new Set(centres).size, centres.length, 'no two desks share a spot');
 });
 
 test('every floor is laid out as an office, not scattered props', () => {
@@ -137,12 +137,15 @@ test('every floor is laid out as an office, not scattered props', () => {
     const kinds = layout.items.map((item) => item.kind);
     assert.ok(kinds.includes('board'), `${room} needs a whiteboard`);
     assert.ok(kinds.includes('cabinet') && kinds.includes('lockers'), `${room} needs storage`);
-    assert.ok(kinds.includes('island'), `${room} needs bench desking`);
+    // Every workstation carries its own partition, drawn as part of the desk.
+    const workDesks = layout.items.filter((item) => item.kind === 'desk' && Number.isInteger(item.pod));
+    assert.ok(workDesks.length > 0 && workDesks.every((item) => item.partition === true), `${room} needs a partition on every desk`);
     assert.ok(kinds.includes('meeting'), `${room} needs a huddle table`);
     assert.ok(kinds.includes('cart'), `${room} needs its print and recycle point`);
-    assert.ok(kinds.filter((kind) => kind === 'island').length >= 2, `${room} needs two desk banks`);
+    // One desk per person, never a desk nobody can sit at.
+    assert.equal(kinds.filter((kind) => kind === 'desk').length >= FLOOR_WORKSTATIONS, true, `${room} needs a desk per person`);
     // Fewer, larger objects: a 136x80 plate cannot carry thirty-odd separate outlines.
-    assert.ok(layout.items.length <= 28, `${room} draws ${layout.items.length} objects, too many for the plate`);
+    assert.ok(layout.items.length <= 30, `${room} draws ${layout.items.length} objects, too many for the plate`);
     const walls = layout.items.filter((item) => item.kind === 'wall');
     assert.ok(walls.filter((wall) => Array.isArray(wall.door)).length >= 1, `${room} needs a doorway`);
     for (const item of layout.items) {
@@ -161,8 +164,7 @@ test('every floor is laid out as an office, not scattered props', () => {
     assert.ok(layout.seats.some((seat) => seat.role === 'focus'), `${room} needs a focus booth`);
     // Owner, 2026-08-12: six people to a floor, so two islands cover it with a spare desk
     // or two and the figures never get shrunk to fit.
-    assert.equal(layout.seats.filter((seat) => seat.desk).length, 8, `${room} seats two islands of four`);
-    assert.ok(layout.seats.filter((seat) => seat.desk).length >= FLOOR_WORKSTATIONS, 'a floor seats everyone it will show');
+    assert.equal(layout.seats.filter((seat) => !seat.role).length, FLOOR_WORKSTATIONS, `${room} seats exactly the six people a floor shows`);
   }
 
   const hq = officeLayout('all', 3);
@@ -195,9 +197,9 @@ test('seat assignment keeps each pod at its own desk bank', () => {
   ];
   const placed = assignSeats(layout, occupants);
   assert.equal(placed.length, 4);
-  const bankOne = layout.items.filter((item) => item.kind === 'island')[1];
+  const bankOne = layout.items.filter((item) => item.kind === 'desk' && item.pod === 1)[0];
   for (const entry of placed.slice(2)) {
-    assert.ok(Math.abs(entry.gx - bankOne.gx) <= 1.2 && Math.abs(entry.gy - bankOne.gy) <= 1.2, 'pod members sit at their own bank');
+    assert.ok(Math.abs(entry.gx - bankOne.gx) <= 2.8 && Math.abs(entry.gy - bankOne.gy) <= 1.2, 'pod members sit at their own bank');
   }
   const seats = placed.map((entry) => `${entry.gx}:${entry.gy}`);
   assert.equal(new Set(seats).size, seats.length, 'nobody shares a seat');
