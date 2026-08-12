@@ -1,0 +1,105 @@
+name: Publish Windows Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/release.yml
+      - .github/release-notes/v*.md
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091d5e7c1194c8990dac85874ecb1bed6f17c3 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@82076239c4f64a5c2ca3f7c72d8b205abe57aeb2 # v7
+        with:
+          node-version: 24
+          cache: npm
+          package-manager-cache: true
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Test and build Windows package
+        shell: pwsh
+        run: ./scripts/package-release.ps1
+
+      - name: Create or update GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "v$version"
+          $notesPath = ".github/release-notes/$tag.md"
+          $zipPath = "release/AI-Office-Dollhouse-$tag-win-x64.zip"
+          $checksumPath = "$zipPath.sha256"
+
+          if (-not (Test-Path -LiteralPath $notesPath)) {
+            throw "Missing release notes: $notesPath"
+          }
+          if (-not (Test-Path -LiteralPath $zipPath)) {
+            throw "Missing Windows package: $zipPath"
+          }
+
+          git ls-remote --exit-code --tags origin "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub tag does not exist: $tag"
+          }
+
+          $checksum = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
+          $checksumLine = "$checksum  $(Split-Path -Leaf $zipPath)"
+          [IO.File]::WriteAllText(
+            (Join-Path $PWD $checksumPath),
+            "$checksumLine`n",
+            [Text.UTF8Encoding]::new($false)
+          )
+
+          $notes = Get-Content -LiteralPath $notesPath -Raw
+          $body = @"
+          $notes
+
+          ## 下載檔案驗證
+
+          SHA-256：$checksum
+
+          也可以下載同名的 .sha256 檔核對。
+          "@
+          $bodyPath = Join-Path $env:RUNNER_TEMP 'release-body.md'
+          [IO.File]::WriteAllText($bodyPath, $body, [Text.UTF8Encoding]::new($false))
+
+          gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit $tag `
+              --repo $env:GITHUB_REPOSITORY `
+              --title "AI Office Dollhouse $version" `
+              --notes-file $bodyPath `
+              --latest
+            if ($LASTEXITCODE -eq 0) {
+              gh release upload $tag $zipPath $checksumPath `
+                --repo $env:GITHUB_REPOSITORY `
+                --clobber
+            }
+          }
+          else {
+            gh release create $tag $zipPath $checksumPath `
+              --repo $env:GITHUB_REPOSITORY `
+              --title "AI Office Dollhouse $version" `
+              --notes-file $bodyPath `
+              --verify-tag `
+              --latest
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to create or update GitHub release $tag"
+          }
