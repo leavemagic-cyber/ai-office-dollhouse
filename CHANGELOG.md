@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 - 2026-08-12
+
+- Keep Neutralino TypeScript declarations on LF in every Windows checkout so the pinned SHA-256 verification remains reproducible in GitHub Actions
+
 ## 0.3.0 - 2026-08-12
 
 - 重畫原創線稿人偶與 2.5D 辦公室，加入平面圖模式
