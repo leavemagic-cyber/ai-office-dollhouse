@@ -1,7 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/neutralinojs/neutralinojs/main/schemas/neutralino.config.schema.json",
   "applicationId": "tw.owner.aioffice.dollhouse",
-  "version": "0.2.0",
+  "version": "0.3.0",
+  "applicationName": "AI Office Dollhouse",
+  "applicationIcon": "resources/icons/app-icon.png",
+  "author": "AI Office Dollhouse contributors",
+  "description": "A read-only Windows overlay for local coding-agent activity",
+  "copyright": "Copyright © 2026 AI Office Dollhouse contributors",
   "defaultMode": "window",
   "port": 0,
   "documentRoot": "/resources/",
@@ -36,6 +41,7 @@
   "modes": {
     "window": {
       "title": "AI 玩偶辦公室",
+      "icon": "/resources/icons/app-icon.png",
       "width": 240,
       "height": 160,
       "minWidth": 118,

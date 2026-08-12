@@ -80,7 +80,7 @@ if (Test-Path -LiteralPath $targetExe) {
 }
 
 if (-not (Test-Path -LiteralPath $InstallRoot)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }
-foreach ($name in @('AI-Office-Dollhouse.exe', 'resources.neu', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'SECURITY.md', 'AI_OFFICE_DOLLHOUSE_V2_OWNER_GOAL_PLAN.md')) {
+foreach ($name in @('AI-Office-Dollhouse.exe', 'resources.neu', 'README.md', 'CHANGELOG.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'SECURITY.md')) {
     $source = Join-Path $SourceRoot $name
     if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $InstallRoot $name) -Force }
 }
@@ -122,6 +122,7 @@ foreach ($shortcutPath in @($desktopShortcut, $startShortcut)) {
     $shortcut = $shell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $targetExe
     $shortcut.WorkingDirectory = $InstallRoot
+    $shortcut.IconLocation = "$targetExe,0"
     $shortcut.Description = 'AI Office Dollhouse - read-only local work animation'
     $shortcut.Save()
 }

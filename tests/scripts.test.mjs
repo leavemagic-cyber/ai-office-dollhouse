@@ -178,7 +178,27 @@ test('integration installer backs up and merges idempotently in an isolated root
   const commands = claude.hooks.SessionStart.flatMap((group) => group.hooks.map((hook) => hook.command));
   assert.ok(commands.includes('existing-safe-hook'));
   assert.equal(commands.filter((command) => command.includes('AIOfficeHookRelay.exe')).length, 1);
+  const claudeRelayCommand = commands.find((command) => command.includes('AIOfficeHookRelay.exe'));
+  assert.match(claudeRelayCommand, /^'\/[a-z]\//, 'Claude Windows hooks need a Git Bash path');
+  assert.equal(claudeRelayCommand.includes('\\'), false, 'Bash command must not contain Windows separators');
   assert.equal(existsSync(join(configRoot, '.ai-office-data', 'integration', 'AIOfficeHookRelay.exe')), true);
+  const gitBash = join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe');
+  if (existsSync(gitBash)) {
+    const eventRoot = join(configRoot, 'bash-event-output');
+    const hook = spawnSync(gitBash, ['-lc', claudeRelayCommand], {
+      cwd: root,
+      encoding: 'utf8',
+      input: JSON.stringify({
+        session_id: 'claude-bash-path-probe',
+        hook_event_name: 'SessionEnd',
+        cwd: 'C:\\Work\\Office Animation',
+        timestamp: '2026-08-12T00:00:00Z'
+      }),
+      env: { ...process.env, AI_OFFICE_DATA_DIR: eventRoot }
+    });
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.equal(JSON.parse(readFileSync(join(eventRoot, 'events.ndjson'), 'utf8')).eventType, 'session_stopped');
+  }
   assert.ok(readdirSync(dirname(claudePath)).some((name) => name.startsWith('settings.json.bak_ai_office_')));
 
   const expected = [

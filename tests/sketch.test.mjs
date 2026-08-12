@@ -11,6 +11,7 @@ import {
   phaseAt,
   PLATE,
   projector,
+  SEATS_PER_ISLAND,
   themeFor,
   THEMES,
   TIMELINE
@@ -18,8 +19,7 @@ import {
 
 /**
  * Minimal canvas stand-in that records what the figure actually draws, in figure-local
- * units, so the geometry rules in artifacts/v4-sketch/CODEX_FIGURE_DESIGN_SPEC can be
- * asserted without a DOM.
+ * units, so the geometry rules can be asserted without a DOM.
  */
 function recordingContext() {
   const strokes = [];
@@ -114,17 +114,24 @@ test('plate keeps the frozen 7% overlay proportions', () => {
   assert.ok(bottomY + PLATE.thickness < PLATE.logicalHeight, 'name plate row must stay clear');
 });
 
-test('floors grow one desk bank per live SessionPod', () => {
+test('every office floor keeps six individual desks in two three-seat banks', () => {
   const rows = (layout) => [...new Set(layout.items.filter((item) => item.kind === 'desk' && Number.isInteger(item.pod)).map((item) => item.pod))];
   const pods = (layout) => new Set(layout.items.filter((item) => item.kind === 'desk' && Number.isInteger(item.pod)).map((item) => item.pod));
-  assert.equal(rows(officeLayout('codex', 1)).length, 1);
+  assert.equal(rows(officeLayout('codex', 1)).length, 2);
   const many = rows(officeLayout('codex', 3)).length;
-  assert.ok(many >= 2, 'more pods open more desk banks');
+  assert.equal(many, 2);
   assert.deepEqual([...pods(officeLayout('codex', 3))], [...Array(many).keys()]);
+  for (let people = 1; people <= FLOOR_WORKSTATIONS; people += 1) {
+    const requiredBanks = Math.ceil(people / SEATS_PER_ISLAND);
+    const layout = officeLayout('codex', requiredBanks);
+    const desks = layout.items.filter((item) => item.kind === 'desk' && Number.isInteger(item.pod));
+    assert.ok(desks.length >= people, `${people} people need at least ${people} work desks`);
+    assert.equal(desks.length, FLOOR_WORKSTATIONS);
+  }
   // Every seat in a bank gets its own workstation desk and task chair.
   const triple = officeLayout('codex', 3);
   const bankSeatCount = triple.seats.filter((seat) => !seat.role).length;
-  // One desk per person, one screen per row.
+  // One desk and one screen per person.
   assert.equal(triple.items.filter((item) => item.kind === 'desk' && Number.isInteger(item.pod)).length, bankSeatCount);
   assert.ok(triple.items.filter((item) => item.kind === 'chair' && item.task).length >= bankSeatCount);
   const centres = triple.items.filter((item) => item.kind === 'desk' && Number.isInteger(item.pod)).map((item) => `${item.gx}:${item.gy}`);

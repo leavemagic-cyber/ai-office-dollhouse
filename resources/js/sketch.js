@@ -1,6 +1,5 @@
-// Architectural line-art renderer for the 7% desktop overlay.
-// Frozen spec: AI_OFFICE_DOLLHOUSE_V3_SKETCH_OVERLAY_STYLE_DRAFT_20260811.md (v1.0).
-// Everything here is stroked geometry: no fills, no external assets, no bitmaps.
+// Architectural line-art renderer for the compact desktop overlay.
+// Geometry is original and code-drawn, with solid heads and restrained tonal furniture.
 // Pure geometry/layout helpers are exported so tests can run them without a DOM.
 
 export const PLATE = Object.freeze({
@@ -160,14 +159,13 @@ function bank(gx, gy) {
 // apart their gy is. These centres sit in the plate's left and front bellies and were
 // checked against every seat pair (zero violations of the 6px/5px screen rule).
 // Owner, 2026-08-12: a floor holds at most six people, so two islands are enough and the
-// figures never have to be shrunk to fit. Discussion:
-// docs/handoff/DISCUSS_OFFICE_LAYOUT_20260812.md.
+// figures never have to be shrunk to fit.
 const ISLANDS = [bank(1.9, 5.0), bank(7.0, 3.95)];
 const HQ_BANKS = ISLANDS;
 const WORK_BANKS = ISLANDS;
 
-/** One island seats four: a session fills its island before the next one opens. */
-export const SEATS_PER_ISLAND = 4;
+/** One desk bank seats three: a fourth person opens the second bank. */
+export const SEATS_PER_ISLAND = 3;
 
 function bankSeats(bank, pod) {
   // A row faces its own screen, which sits just behind the desks.
@@ -176,7 +174,7 @@ function bankSeats(bank, pod) {
 
 /**
  * Every plate that is an office rather than a lobby. Two variants, because a tower does
- * not repeat its entrance on every storey (Codex multi-floor spec §7):
+ * not repeat its entrance on every storey:
  *
  * - `headquarters` (the single-floor view) is the whole company on one plate, so it keeps
  *   the Owner's room, reception and the huddle.
@@ -186,7 +184,10 @@ function bankSeats(bank, pod) {
 function openPlanOffice(room, pods, headquarters) {
   const items = [];
   const seats = [];
-  const banks = (headquarters ? HQ_BANKS : WORK_BANKS).slice(0, Math.max(1, Math.min(ISLANDS.length, pods)));
+  // The office is a six-desk room even when only one person is present. Empty desks are
+  // part of the workplace, while the three-person grouping below only decides which row
+  // an arriving worker uses first.
+  const banks = headquarters ? HQ_BANKS : WORK_BANKS;
 
   // Support points hug the two back edges rather than the plate's back tip, which is a
   // point with no width: storage down the left edge, print and pantry along the top.
@@ -236,14 +237,13 @@ function openPlanOffice(room, pods, headquarters) {
 
   for (const [index, desks] of banks.entries()) {
     // Individual desks, one per person, sharing a low screen along the back of the row.
-    // Six desks for a six-person floor, so nothing is drawn that nobody can sit at.
+    // Six desks cover the full floor capacity without scaling any figure.
     for (const seat of bankSeats(desks, index)) {
       items.push({ kind: 'desk', gx: seat.gx, gy: seat.gy - .62, w: 1.0, d: .58, monitors: 1, partition: true, pod: index });
       items.push({ kind: 'chair', gx: seat.gx, gy: seat.gy + .34, task: true, facing: -1 });
       seats.push(seat);
     }
   }
-  items.push({ kind: 'plant', gx: 6.6, gy: 9.2 });
   if (room === 'claude') items.push({ kind: 'stamps', gx: 6.0, gy: 2.0 });
   else if (room === 'grok') items.push({ kind: 'crates', gx: 6.0, gy: 2.0 });
   return {
@@ -257,9 +257,8 @@ function openPlanOffice(room, pods, headquarters) {
 }
 
 /**
- * Office layout for one plate: high furniture on the back walls, aligned work islands in
- * the middle, front edge kept clear as the walkway to the stairs. A floor grows one island
- * at a time, and a session fills its island before the next opens (SPEC 4.1/4.3/4.5).
+ * Office layout for one plate: high furniture on the back walls, two desk banks in the
+ * middle, and a clear front walkway to the stairs.
  */
 export function officeLayout(room, podCount = 1) {
   const items = [];
@@ -284,7 +283,7 @@ export function officeLayout(room, podCount = 1) {
 
   if (room === 'lobby') {
     // Entrance floor: reception, visitor waiting and the formal meeting room. These exist
-    // once in the building and are never copied onto a work floor (Codex §7).
+    // once in the building and are never copied onto a work floor.
     items.push({ kind: 'cabinet', gx: 1.0, gy: 1.0, w: 1.2, d: 1.4, h: 1.4, shelves: 4 });
     items.push({ kind: 'desk', gx: 4, gy: 3, w: 3.2, d: 1.4, counter: true });
     items.push({ kind: 'chair', gx: 7.0, gy: 5.0 });
@@ -295,7 +294,7 @@ export function officeLayout(room, podCount = 1) {
     items.push({ kind: 'wall', x1: 0, y1: 5.6, x2: 4.4, y2: 5.6, door: [.72, .96] });
     items.push({ kind: 'wall', x1: 4.4, y1: 5.6, x2: 4.4, y2: 10 });
     // The reception counter has a seat but no resident: a host only appears when there is
-    // an Owner, a visitor or something waiting for approval (Codex seating spec §4).
+    // an Owner, a visitor or something waiting for approval.
     seats.push({ gx: 4, gy: 2, pod: 0, facing: 1, role: 'reception' });
     for (const [index, spot] of [[6, 4], [8, 4], [6, 6], [2, 6]].entries()) {
       seats.push({ gx: spot[0], gy: spot[1], pod: 0, facing: -1, role: index ? 'visitor' : 'meet' });
@@ -319,7 +318,7 @@ export function assignSeats(layout, occupants) {
     let slot = null;
     if (person.manager) slot = roleSeat('manager') || roleSeat('owner');
     // Reception is a function, not a job: the counter stays empty until somebody is
-    // actually hosting an Owner, a visitor or an approval (Codex seating spec §4).
+    // actually hosting an Owner, a visitor or an approval.
     if (!slot && person.hosting) slot = roleSeat('reception');
     if (!slot && person.activity === 'waiting_owner') slot = roleSeat('queue');
     if (!slot) slot = pool.find((entry) => !entry.taken && entry.seat.pod === podIndex && !entry.seat.role);
@@ -548,7 +547,7 @@ export function drawStairs(ctx, project, progress = 1) {
   strokePoly(ctx, [[leftX, leftY], [tipX, tipY], [rightX, rightY]], { width: .45, progress: arrow });
 }
 
-/** Elevator rail on the right-rear guide plus the wireframe car (SPEC 10.4 shared queue). */
+/** Elevator rail on the right-rear guide plus the shared wireframe cue car. */
 export function drawElevator(ctx, project, theme, height, { car = null, progress = 1 } = {}) {
   const [railX] = project(PLATE.gridWidth, 0);
   ctx.save();
@@ -1002,7 +1001,7 @@ function drawPaper(ctx, project, gx, gy, progress, tray = false) {
 
 // ---------------------------------------------------------------------------
 // Figure A: the architect-scale line figure, 13px tall.
-// One drawing language only, per artifacts/v4-sketch/CODEX_FIGURE_DESIGN_SPEC §2:
+// One drawing language only:
 // a solid head over a round-capped single-line skeleton. The old closed grey torso
 // and the chest identity dot are gone -- three competing syntaxes in a 13px body is
 // what made the figure ugly. Identity now sits on the floor under the feet (spec §3),
@@ -1191,7 +1190,7 @@ export function drawFigure(ctx, x, baseline, theme, options = {}) {
   ctx.restore();
 }
 
-/** Small paper label with the "?" mark used by the Owner request cue (SPEC 9.1 / cue G). */
+/** Small paper label with the "?" mark used by the Owner request cue. */
 /**
  * The request tag hangs to the figure's upper right, never straight up: directly above a
  * figure is where the person on the seat behind them is standing.
@@ -1471,7 +1470,7 @@ export function drawPlanFigure(ctx, x, y, theme, { identity = null, alpha = 1, f
   ctx.globalAlpha *= clamp(alpha);
   // In plan the circle is the head seen from above, so identity tints the whole disc
   // instead of sitting as a dot inside it: same rule as the axonometric figure, which
-  // keeps no badge inside a body (CODEX_FIGURE_DESIGN_SPEC §3).
+  // keeps no badge inside a body.
   if (identity || theme.tone) {
     ctx.save();
     ctx.globalAlpha *= identity ? .55 : 1;
@@ -1495,7 +1494,7 @@ export function drawPlanFigure(ctx, x, y, theme, { identity = null, alpha = 1, f
   if (tag) drawQuestionTag(ctx, x + 1, y - 2, theme, alpha);
 }
 
-/** Hoist crane used while a new floor slides into place (SPEC 5.1 玩具吊車). */
+/** Hoist crane used while a new floor slides into place. */
 export function drawCrane(ctx, project, theme, strength) {
   if (strength <= 0) return;
   const [hookX] = project(PLATE.gridWidth / 2, PLATE.gridDepth / 2);

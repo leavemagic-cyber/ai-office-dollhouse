@@ -1,9 +1,9 @@
 {
   "name": "ai-office-dollhouse",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "A compact vertical 2.5D desktop dollhouse for visualizing real local AI agent activity.",
+  "description": "A read-only Windows overlay for local coding-agent activity.",
   "scripts": {
     "start": "neu run",
     "dev": "neu run -- --window-enable-inspector=true",
@@ -21,5 +21,13 @@
   "engines": {
     "node": ">=22"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leavemagic-cyber/ai-office-dollhouse.git"
+  },
+  "bugs": {
+    "url": "https://github.com/leavemagic-cyber/ai-office-dollhouse/issues"
+  },
+  "homepage": "https://github.com/leavemagic-cyber/ai-office-dollhouse#readme",
   "license": "MIT"
 }

@@ -39,10 +39,33 @@ function Install-AiOfficeRelay {
     throw 'No AI Office event relay is available. Build the project before installing integrations.'
 }
 
+function ConvertTo-AiOfficeBashPath {
+    param([string]$Path)
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $match = [regex]::Match($fullPath, '^(?<drive>[A-Za-z]):\\(?<tail>.*)$')
+    if (-not $match.Success) { throw 'Claude hook relay must use an absolute Windows drive path.' }
+    $drive = $match.Groups['drive'].Value.ToLowerInvariant()
+    $tail = $match.Groups['tail'].Value.Replace('\', '/')
+    return "/$drive/$tail"
+}
+
+function Quote-AiOfficeBashArgument {
+    param([string]$Value)
+    # A single quote inside a POSIX single-quoted argument is represented by closing the
+    # quote, writing a double-quoted quote, then reopening it.
+    return "'" + $Value.Replace("'", "'`"'`"'") + "'"
+}
+
 function Get-AiOfficeHookCommand {
     param([string]$TargetProvider)
     $escapedRelay = $installedRelayPath.Replace('"', '\"')
     if ($installedRelayPath.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase)) {
+        if ($TargetProvider -eq 'claude') {
+            # Claude Code for Windows executes hooks through Git Bash. A bare C:\ path
+            # loses every backslash there, so use a quoted /c/... path that Bash can run.
+            $bashRelay = Quote-AiOfficeBashArgument (ConvertTo-AiOfficeBashPath $installedRelayPath)
+            return "$bashRelay $TargetProvider auto"
+        }
         # Grok Build's Windows hook runner passes the command through a shell.
         # A leading quoted executable is parsed inconsistently there.  The
         # normal per-user install path contains no spaces, so keep it bare;
