@@ -113,7 +113,8 @@ export function createInitialState(now = Date.now()) {
       applied: 0,
       duplicates: 0,
       rejected: 0,
-      lastEventAt: null
+      lastEventAt: null,
+      lastTierAEventAtByProvider: {}
     },
     eventLog: [],
     diagnostics: [],
@@ -279,6 +280,7 @@ function mainAgent(pod) {
 function setPodActivity(pod, activity, { resolvesOwnerRequest = false } = {}) {
   if (pod.activity === 'waiting_owner' && !resolvesOwnerRequest) return;
   pod.activity = activity;
+  if (activity !== 'unknown') delete pod.unknownSinceAt;
 }
 
 function recomputeTeam(team, timestamp) {
@@ -413,6 +415,12 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
     return { applied: false, reason: 'duplicate', event };
   }
   state.seenEventIds[event.eventId] = event.timestamp;
+  if (event.observationTier === 'A' && event.provider !== 'other') {
+    state.metrics.lastTierAEventAtByProvider[event.provider] = Math.max(
+      Number(state.metrics.lastTierAEventAtByProvider[event.provider]) || 0,
+      event.timestamp
+    );
+  }
   ensureSurface(state, event);
 
   if (event.eventType === 'surface_discovered' || event.eventType === 'process_observed') {
@@ -430,12 +438,16 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
       surface.processState = 'exited';
     }
   } else if (event.eventType === 'adapter_disconnected') {
-    Object.values(state.teams).forEach((team) => {
-      Object.values(team.pods).forEach((pod) => {
-        if (pod.surfaceId === event.surfaceId && pod.lifecycle === 'active' && pod.activity !== 'waiting_owner') {
-          pod.activity = 'unknown';
-        }
-      });
+    const team = state.teams[event.provider];
+    Object.values(team?.pods || {}).forEach((pod) => {
+      if (pod.lifecycle !== 'active') return;
+      if (pod.activity !== 'waiting_owner') {
+        pod.activity = 'unknown';
+        pod.unknownSinceAt = event.timestamp;
+      }
+      for (const agent of Object.values(pod.agents || {})) {
+        if (agent.lifecycle !== 'finished') agent.activity = 'unknown';
+      }
     });
   } else if (SESSION_EVENTS.has(event.eventType)) {
     const pod = ensurePod(state, event);
@@ -622,6 +634,12 @@ export function degradeStaleSessions(state, now = Date.now(), staleAfter = 5 * 6
         pod.lastActivityAt = Math.max(Number(pod.lastActivityAt) || 0, now);
       } else if (now - pod.lastActivityAt > staleAfter) {
         pod.activity = 'unknown';
+        // Preserve when the evidence first became stale. Using `now` would resurrect an
+        // ancient replay for a fresh uncertainty window on every application restart.
+        pod.unknownSinceAt ||= Number(pod.lastActivityAt || 0) + staleAfter;
+        for (const agent of Object.values(pod.agents || {})) {
+          if (agent.lifecycle !== 'finished') agent.activity = 'unknown';
+        }
       }
     });
     recomputeTeam(team, now);

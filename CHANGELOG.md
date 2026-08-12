@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 - 2026-08-13
+
+- 修正 Tier-D presence 去重造成的過期狀態，快照不再冒充執行中；轉接器斷線時主工作與 subagent 一律以最長十分鐘的 unknown 狀態凍結，過期重播不再永久堆積樓層
+- Owner 改為永久、獨立、最大且不透明的頂層，加入咖啡、文件與休息待機動作
+- 重作 G 請示、H 授權與 J 交件流程；只有明確 `task_completed` 才觸發交件
+- 每個 session 使用 Provider 隔離樓層，不再混合無關 Provider
+- 修正右上縮放熱區遮住關閉 X，鎖檔清理失敗不再阻止退出，並加快頂列原生互動切換避免快速點擊被透明狀態吃掉
+- Codex hook 改安裝至 `~/.codex/hooks/hooks.json`，並區分已安裝與已觀測事件
+
 ## 0.3.1 - 2026-08-12
 
 - Keep Neutralino TypeScript declarations on LF in every Windows checkout so the pinned SHA-256 verification remains reproducible in GitHub Actions

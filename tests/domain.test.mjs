@@ -71,8 +71,11 @@ test('adapter disconnect degrades active work to unknown, not completed', () => 
   const state = createInitialState(base);
   applyOfficeEvent(state, event({ eventId: 'a', eventType: 'turn_started' }), base);
   applyOfficeEvent(state, event({ eventId: 'lost', eventType: 'adapter_disconnected', sessionId: null }), base);
-  assert.equal(state.teams.codex.pods['session-a'].activity, 'unknown');
-  assert.equal(state.teams.codex.pods['session-a'].lifecycle, 'active');
+  const pod = state.teams.codex.pods['session-a'];
+  assert.equal(pod.activity, 'unknown');
+  assert.equal(pod.lifecycle, 'active');
+  assert.equal(pod.unknownSinceAt, base);
+  assert.ok(Object.values(pod.agents).every((agent) => agent.activity === 'unknown'));
 });
 
 test('Gemini delegation is decoration and does not create population', () => {
@@ -163,12 +166,32 @@ test('presence scan can change an open surface back to closed without completing
   assert.equal(state.surfaces['codex:app'].appOpen, false);
 });
 
+test('Tier-A observation evidence survives event-log compaction', () => {
+  const state = createInitialState(base);
+  applyOfficeEvent(state, event({ eventId: 'tier-a', eventType: 'session_started' }), base);
+  for (let index = 0; index < 4; index += 1) {
+    applyOfficeEvent(state, event({
+      eventId: `presence-${index}`,
+      eventType: 'surface_discovered',
+      sessionId: null,
+      observationTier: 'D',
+      timestamp: base + index + 1
+    }), base + index + 1);
+  }
+  compactOfficeState(state, base + 10, { maxEvents: 1 });
+  assert.equal(state.eventLog.length, 1);
+  assert.equal(state.metrics.lastTierAEventAtByProvider.codex, base);
+});
+
 test('replayed active sessions become unknown when lifecycle evidence is stale', () => {
   const state = createInitialState(base);
   applyOfficeEvent(state, event({ eventId: 'running', eventType: 'turn_started' }), base);
   degradeStaleSessions(state, base + 10_000, 1000);
-  assert.equal(state.teams.codex.pods['session-a'].activity, 'unknown');
-  assert.equal(state.teams.codex.pods['session-a'].lifecycle, 'active');
+  const pod = state.teams.codex.pods['session-a'];
+  assert.equal(pod.activity, 'unknown');
+  assert.equal(pod.lifecycle, 'active');
+  assert.equal(pod.unknownSinceAt, base + 1000, 'staleness begins at the evidence deadline, not application restart time');
+  assert.ok(Object.values(pod.agents).every((agent) => agent.activity === 'unknown'));
 });
 
 test('unresolved Owner requests survive stale and disconnect degradation until explicitly resolved', () => {

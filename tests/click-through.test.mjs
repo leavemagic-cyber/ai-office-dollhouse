@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { CHROME, ClickThroughGuard, clickThroughAt, scaleFromRect } from '../resources/js/click-through.js';
+import { CHROME, CLICK_THROUGH_POLL_MS, ClickThroughGuard, clickThroughAt, scaleFromRect } from '../resources/js/click-through.js';
 
 // A 240x300 logical overlay on a 200% display, parked near the bottom right.
 const rect = { left: 1000, top: 500, right: 1480, bottom: 1100 };
 const scale = 2;
+
+test('native click-through polling leaves enough time for a normal X click', () => {
+  assert.ok(CHROME.approach >= 20);
+  assert.ok(CLICK_THROUGH_POLL_MS <= 50);
+});
 
 test('the drawing lets the mouse through, the chrome does not', () => {
   // Middle of a floor plate: this is the whole point of the overlay being an overlay.

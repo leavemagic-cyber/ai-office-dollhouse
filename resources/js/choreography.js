@@ -13,8 +13,7 @@ export const SIGNATURE_EVENTS = Object.freeze({
   owner_input_required: { code: 'G', kind: 'owner_request', duration: 12_000, priority: 10 },
   delegated_decision_granted: { code: 'H', kind: 'authority', duration: 10_000, priority: 8 },
   multi_delivery: { code: 'I', kind: 'multi_delivery', duration: 8_000, priority: 8 },
-  task_completed: { code: 'J', kind: 'final_delivery', duration: 12_000, priority: 9 },
-  session_stopped: { code: 'J', kind: 'final_delivery', duration: 12_000, priority: 9 }
+  task_completed: { code: 'J', kind: 'final_delivery', duration: 12_000, priority: 9 }
 });
 
 function signatureCandidates(model, now) {

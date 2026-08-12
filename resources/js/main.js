@@ -17,8 +17,8 @@ import {
   SHARED_FLOOR_KEY,
   sharedFloorSessions
 } from './floor-layout.js';
-import { ROOM_META, RoomRenderer, SINGLE_FLOOR_CAPACITY, SINGLE_FLOOR_KEY, totalOccupants } from './renderer.js';
-import { ClickThroughGuard, clickThroughAt, scaleFromRect } from './click-through.js';
+import { ROOM_META, RoomRenderer } from './renderer.js';
+import { CLICK_THROUGH_POLL_MS, ClickThroughGuard, clickThroughAt, scaleFromRect } from './click-through.js';
 import { PLATE } from './sketch.js';
 import { ResourceLifecycleManager } from './resource-manager.js';
 
@@ -31,8 +31,7 @@ const MAX_OVERLAY_HEIGHT = 720;
 // A user's own move or resize still wins over both.
 const DEFAULT_OVERLAY_WIDTH = 240;
 const OVERLAY_EDGE_GAP = 8;
-// One floor gets the room several floors would have taken, so the office is legible.
-const SINGLE_FLOOR_ZOOM = 1.5;
+const OBSERVED_INTEGRATION_FRESH_MS = 10 * 60_000;
 // Backing store is supersampled so the 0.4-0.9px sketch strokes stay crisp on any DPI.
 const SKETCH_SUPERSAMPLE = Math.min(4, Math.max(2, Math.round((globalThis.devicePixelRatio || 1) * 2)));
 const FLOOR_CANVAS_WIDTH = Math.round(PLATE.logicalWidth * SKETCH_SUPERSAMPLE);
@@ -71,11 +70,13 @@ function bottomRightWindowPosition(metrics, widthLogical, heightLogical) {
 
 function overlayHeightForFloorCount(width, floorCount) {
   const canvasWidth = Math.max(100, width - 6);
-  const floorHeight = canvasWidth * (PLATE.logicalHeight / PLATE.logicalWidth);
   const count = Math.max(1, floorCount);
+  const ownerHeight = canvasWidth * (PLATE.logicalHeight / PLATE.logicalWidth);
+  const workCount = Math.max(0, count - 1);
+  const workHeight = canvasWidth * .82 * (PLATE.logicalHeight / PLATE.logicalWidth);
   // 21px covers the title bar (15px) plus the window's own top and bottom padding, so the
   // bottom plate keeps its name plate instead of being clipped by the window edge.
-  return boundedInteger(21 + count * floorHeight + Math.max(0, count - 1) * 4, MIN_OVERLAY_HEIGHT, MIN_OVERLAY_HEIGHT, MAX_OVERLAY_HEIGHT);
+  return boundedInteger(21 + ownerHeight + workCount * workHeight + workCount * 4, MIN_OVERLAY_HEIGHT, MIN_OVERLAY_HEIGHT, MAX_OVERLAY_HEIGHT);
 }
 
 function loadSettings() {
@@ -93,8 +94,9 @@ function loadSettings() {
       windowY: boundedInteger(stored.windowY, 160, -10_000, 10_000),
       autoProtect: true,
       projection: stored.projection === 'plan' ? 'plan' : 'axon',
-      // auto: one shared floor until the office outgrows it; single/floors force a choice.
-      floorLayout: ['single', 'floors'].includes(stored.floorLayout) ? stored.floorLayout : 'auto',
+      // Provider work is always isolated by floor. Old compact-layout preferences are
+      // migrated away because they could visually mix unrelated providers.
+      floorLayout: 'floors',
       layoutVersion: LAYOUT_VERSION,
       seedCorner: migrating
     };
@@ -108,7 +110,7 @@ function loadSettings() {
       windowY: 160,
       autoProtect: true,
       projection: 'axon',
-      floorLayout: 'auto',
+      floorLayout: 'floors',
       layoutVersion: LAYOUT_VERSION,
       seedCorner: true
     };
@@ -123,7 +125,7 @@ function visibleLabel(value, privacy, fallback = '既有工作') {
   return privacy ? fallback : safeLabel(value, fallback, 42);
 }
 
-function compactModel(state, existingSnapshot, resourceManager, systemMetrics, settings) {
+function compactModel(state, existingSnapshot, resourceManager, systemMetrics, settings, integrationCoverage = []) {
   const privacy = settings.privacyMask;
   const now = Date.now();
   const providers = {};
@@ -178,6 +180,23 @@ function compactModel(state, existingSnapshot, resourceManager, systemMetrics, s
   const waitingOwnerCount = Object.values(providers)
     .flatMap((provider) => provider.livePods)
     .filter((pod) => pod.activity === 'waiting_owner').length;
+  const integrations = {};
+  for (const provider of ['codex', 'claude', 'gemini', 'grok']) {
+    const status = integrationCoverage.find((item) => item.provider === provider) || {};
+    const lastObservedAt = Number(state.metrics.lastTierAEventAtByProvider?.[provider]) || 0;
+    integrations[provider] = {
+      installed: Boolean(status.installed),
+      requiresTrust: Boolean(status.requiresTrust),
+      lastObservedAt,
+      // Installed is configuration state. Only an actual Tier-A event proves that the
+      // hook loaded and reached the relay; never infer that last link from a JSON file.
+      state: lastObservedAt && now - lastObservedAt < OBSERVED_INTEGRATION_FRESH_MS
+        ? 'observed'
+        : lastObservedAt
+          ? 'observed_historical'
+          : status.installed ? 'installed_unverified' : 'missing'
+    };
+  }
   return {
     schemaVersion: 2,
     generatedAt: Date.now(),
@@ -190,6 +209,7 @@ function compactModel(state, existingSnapshot, resourceManager, systemMetrics, s
     owner: { inboxCount: waitingOwnerCount, activity: waitingOwnerCount ? 'attention' : 'idle' },
     providers,
     surfaces: state.surfaces,
+    integrations,
     existingTruth: existingSnapshot?.truth || '既有工作快照未載入。',
     metrics: {
       eventCount: state.metrics.applied,
@@ -235,7 +255,10 @@ function statusForRoom(room, model) {
   const provider = model.providers[room];
   if (provider.livePods.length) {
     const people = provider.livePods.reduce((sum, pod) => sum + Math.max(1, pod.agents.length), 0);
-    return { kind: 'live', label: `真實事件 · ${provider.livePods.length} 任務`, count: people };
+    const confirmed = provider.livePods.filter((pod) => pod.activity !== 'unknown').length;
+    return confirmed
+      ? { kind: 'live', label: `真實事件 · ${confirmed} 任務`, count: people }
+      : { kind: 'unknown', label: `狀態未確認 · ${provider.livePods.length} 任務凍結`, count: people };
   }
   const recent = provider.snapshotWork.filter((work) => work.recent);
   if (recent.length) {
@@ -256,8 +279,10 @@ async function startTower() {
   let existingSnapshot = null;
   let systemMetrics = {};
   let currentModel = null;
+  let integrationCoverage = [];
   let broadcastQueued = false;
   const floorViews = new Map();
+  const ownerRoot = document.getElementById('owner-floor');
   const floorRoot = document.getElementById('tower-floors');
   let floorObserver = null;
   let overlayVisible = false;
@@ -333,7 +358,7 @@ async function startTower() {
     try {
       const measured = await clickThrough.request(next);
       if (measured) {
-        clickThroughScale = scaleFromRect(measured, effectiveOverlayWidth());
+        clickThroughScale = scaleFromRect(measured, settings.overlayWidth);
       }
     } finally {
       clickThroughBusy = false;
@@ -344,7 +369,7 @@ async function startTower() {
   async function restoreClickThroughForChrome() {
     clickThrough.invalidateRect();
     const measured = await clickThrough.ensureInteractive();
-    if (measured) clickThroughScale = scaleFromRect(measured, effectiveOverlayWidth());
+    if (measured) clickThroughScale = scaleFromRect(measured, settings.overlayWidth);
   }
 
   function invalidateClickThroughRect() {
@@ -368,20 +393,12 @@ async function startTower() {
     if (wanted !== clickThrough.state) await applyClickThrough(wanted);
   }
 
-  setInterval(() => { pollClickThrough().catch(() => {}); }, 140);
+  setInterval(() => { pollClickThrough().catch(() => {}); }, CLICK_THROUGH_POLL_MS);
 
   const resourceManager = new ResourceLifecycleManager({
     state,
     onLevelChanged: () => scheduleBroadcast()
   });
-
-  let singleFloorActive = false;
-
-  function effectiveOverlayWidth() {
-    // The single floor is not magnified: the Owner asked for more room for people, not a
-    // bigger drawing. Extra capacity is handled inside the floor plan, not by the window.
-    return settings.overlayWidth;
-  }
 
   function countLeavingViews() {
     let total = 0;
@@ -393,7 +410,7 @@ async function startTower() {
     activeFloorCount = floorCount;
     // Floors that are still erasing themselves keep their room until the animation ends.
     const visibleCount = floorCount + countLeavingViews();
-    const width = effectiveOverlayWidth();
+    const width = settings.overlayWidth;
     const height = overlayHeightForFloorCount(width, visibleCount);
     const geometry = `${width}x${height}`;
     if (geometry !== appliedWindowGeometry) {
@@ -429,9 +446,11 @@ async function startTower() {
       await bridge.installIntegration(provider);
       installed.push(provider);
     }
+    const refreshed = installed.length ? await bridge.integrationStatus() : status;
     return {
       installed,
-      alreadyReady: (status.results || []).filter((item) => item.installed).map((item) => item.provider)
+      alreadyReady: (status.results || []).filter((item) => item.installed).map((item) => item.provider),
+      results: refreshed.results || status.results || []
     };
   }
 
@@ -463,7 +482,9 @@ async function startTower() {
     if (recentEvent && eventLabels[recentEvent.eventType]) return `${prefix}${eventLabels[recentEvent.eventType]} · ${recentEvent.taskLabel}`;
     if (spec?.sessionId) {
       const pod = provider.livePods.find((entry) => entry.id === spec.sessionId);
-      if (pod) return `${prefix}live · ${pod.agents.length} 名成員`;
+      if (pod) return pod.activity === 'unknown'
+        ? `${prefix}狀態未確認 · ${pod.agents.length} 名成員凍結`
+        : `${prefix}live · ${pod.agents.length} 名成員`;
     }
     if (provider.livePods.length) return `${prefix}live · ${provider.livePods.map((pod) => pod.label).join('、')}`;
     const recent = provider.snapshotWork.filter((work) => work.recent);
@@ -478,7 +499,7 @@ async function startTower() {
 
   function createFloorView(spec) {
     const card = document.createElement('section');
-    card.className = 'floor-card new-annex';
+    card.className = `floor-card new-annex${spec.room === 'owner' ? ' owner-card' : ''}`;
     card.dataset.floorKey = spec.key;
     card.dataset.room = spec.room;
     const head = document.createElement('button');
@@ -531,18 +552,7 @@ async function startTower() {
    * animation before its card is removed and the others close up.
    */
   function ensureFloorViews(model) {
-    const stacked = floorSpecsForModel(model, ROOM_META, { activeOnly: true });
-    const headcount = totalOccupants(model);
-    // One shared office while the team fits on a single plate; separate provider floors
-    // once it does not. The Owner can also pin either view from the title bar.
-    const single = stacked.length > 0 && (
-      settings.floorLayout === 'single'
-      || (settings.floorLayout === 'auto' && headcount > 0 && headcount <= SINGLE_FLOOR_CAPACITY)
-    );
-    singleFloorActive = single;
-    const specs = single
-      ? [{ key: SINGLE_FLOOR_KEY, room: SINGLE_FLOOR_KEY, annexIndex: 0, annexCount: 1, title: `AI 辦公室 · ${headcount} 人` }]
-      : stacked;
+    const specs = floorSpecsForModel(model, ROOM_META, { activeOnly: true });
     const desiredKeys = new Set(specs.map((spec) => spec.key));
     for (const [key, view] of floorViews) {
       if (desiredKeys.has(key)) {
@@ -582,17 +592,28 @@ async function startTower() {
       if (!view.leavingTimer) continue;
       ordered.splice(Math.min(view.orderIndex, ordered.length), 0, view);
     }
-    for (const view of ordered) floorRoot.append(view.card);
+    for (const view of ordered) {
+      (view.room === 'owner' ? ownerRoot : floorRoot).append(view.card);
+    }
     return specs;
   }
 
   function updateTower() {
     if (!currentModel) return;
-    const liveCount = Object.values(currentModel.providers).reduce((sum, provider) => sum + provider.livePods.length, 0);
+    const displayedPods = Object.values(currentModel.providers).flatMap((provider) => provider.livePods);
+    const liveCount = displayedPods.filter((pod) => pod.activity !== 'unknown').length;
+    const unknownCount = displayedPods.length - liveCount;
     const recentSnapshots = Object.values(currentModel.providers).reduce((sum, provider) => sum + provider.snapshotWork.filter((work) => work.recent).length, 0);
     document.getElementById('tower-truth').textContent = liveCount
-      ? `${liveCount} 個結構化 live 任務`
-      : recentSnapshots ? `${recentSnapshots} 個近期既有工作快照` : '未收到進行中工作事件';
+      ? `${liveCount} 個結構化 live 任務${unknownCount ? `；${unknownCount} 個狀態未確認` : ''}`
+      : unknownCount
+        ? `${unknownCount} 個狀態未確認任務（凍結）`
+        : recentSnapshots ? `${recentSnapshots} 個近期既有工作快照` : '未收到進行中工作事件';
+    const integrationSummary = Object.entries(currentModel.integrations || {})
+      .map(([provider, status]) => `${provider}: ${status.state}${status.lastObservedAt ? ` @ ${new Date(status.lastObservedAt).toLocaleTimeString('zh-TW', { hour12: false })}` : ''}`)
+      .join('；');
+    tower.title = integrationSummary;
+    tower.dataset.truth = liveCount ? 'tier-a-live' : unknownCount ? 'tier-a-unknown' : recentSnapshots ? 'snapshot-only' : 'no-work-event';
     const modeButton = document.getElementById('tower-mode');
     const modeLabel = ({ full: '完整', low: '低動態', dnd: '勿擾', important: '重要事件' })[settings.mode];
     modeButton.textContent = ({ full: '◌', low: '◔', dnd: '◑', important: '●' })[settings.mode];
@@ -601,32 +622,15 @@ async function startTower() {
     const privacyButton = document.getElementById('tower-privacy');
     privacyButton.textContent = settings.privacyMask ? '◉' : '◐';
     privacyButton.setAttribute('aria-pressed', String(settings.privacyMask));
-    const layoutButton = document.getElementById('tower-layout');
-    const layoutLabel = ({ auto: `自動（超過 ${SINGLE_FLOOR_CAPACITY} 人分層）`, single: '單一樓層', floors: '分層顯示' })[settings.floorLayout];
-    layoutButton.textContent = ({ auto: '▦', single: '▤', floors: '▥' })[settings.floorLayout];
-    layoutButton.title = `樓層顯示：${layoutLabel}`;
-    layoutButton.setAttribute('aria-label', `樓層顯示：${layoutLabel}`);
     const floorSpecs = ensureFloorViews(currentModel);
     for (const spec of floorSpecs) {
       const { room, key, annexIndex, annexCount } = spec;
       const view = floorViews.get(key);
       if (!view) continue;
-      if (room === SINGLE_FLOOR_KEY) {
-        view.card.classList.toggle('live', true);
-        view.card.classList.remove('snapshot', 'collapsed');
-        view.caret.textContent = '▾';
-        view.status.textContent = spec.title;
-        view.source.textContent = '全部進行中的工作在同一層';
-        view.clock.textContent = new Date(currentModel.generatedAt).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
-        if (view.canvas.height !== FLOOR_CANVAS_HEIGHT) view.renderer.resize(FLOOR_CANVAS_WIDTH, FLOOR_CANVAS_HEIGHT);
-        const showSingle = view.inView && !document.hidden;
-        view.renderer.setModel(currentModel, showSingle);
-        if (showSingle) view.renderer.start(); else view.renderer.stop();
-        continue;
-      }
       const status = statusForRoom(room, currentModel);
       view.card.classList.toggle('live', status.kind === 'live');
       view.card.classList.toggle('snapshot', status.kind === 'snapshot');
+      view.card.classList.toggle('unknown', status.kind === 'unknown');
       const population = annexPopulation(room, currentModel, annexIndex);
       if (view.canvas.height !== FLOOR_CANVAS_HEIGHT) view.renderer.resize(FLOOR_CANVAS_WIDTH, FLOOR_CANVAS_HEIGHT);
       view.status.textContent = annexCount > 1 ? `${population} 人 · ${annexIndex + 1}/${annexCount}` : status.label;
@@ -645,7 +649,7 @@ async function startTower() {
 
   async function broadcastModel() {
     broadcastQueued = false;
-    currentModel = compactModel(state, existingSnapshot, resourceManager, systemMetrics, settings);
+    currentModel = compactModel(state, existingSnapshot, resourceManager, systemMetrics, settings, integrationCoverage);
     globalChoreography.ingest(currentModel, Date.now());
     try { localStorage.setItem('ai-office-v2-last-model', JSON.stringify(currentModel)); } catch { /* cache is optional */ }
     updateTower();
@@ -699,7 +703,7 @@ async function startTower() {
         view.renderer.start();
       } else view.renderer.stop();
     }
-  }, { root: floorRoot, threshold: .05 });
+  }, { root: null, threshold: .05 });
   ensureFloorViews(null);
   for (const view of floorViews.values()) floorObserver.observe(view.card);
   document.addEventListener('visibilitychange', () => {
@@ -719,15 +723,19 @@ async function startTower() {
     await restoreClickThroughForChrome();
     await bridge.minimize();
   });
-  document.getElementById('tower-close').addEventListener('click', () => bridge.close());
+  const closeButton = document.getElementById('tower-close');
+  let closeRequested = false;
+  const requestClose = () => {
+    if (closeRequested) return;
+    closeRequested = true;
+    // Exiting outranks click-through or lock cleanup. Pointer-down avoids losing the
+    // action between mouse-down and mouse-up if Windows changes the transparent style.
+    bridge.close().catch(() => { closeRequested = false; });
+  };
+  closeButton.addEventListener('pointerdown', requestClose);
+  closeButton.addEventListener('click', requestClose);
   document.getElementById('tower-privacy').addEventListener('click', () => {
     settings.privacyMask = !settings.privacyMask; saveSettings(settings); scheduleBroadcast();
-  });
-  document.getElementById('tower-layout').addEventListener('click', () => {
-    const order = ['auto', 'single', 'floors'];
-    settings.floorLayout = order[(order.indexOf(settings.floorLayout) + 1) % order.length];
-    saveSettings(settings);
-    scheduleBroadcast();
   });
   document.getElementById('tower-mode').addEventListener('click', () => {
     const modes = [DISPLAY_MODES.FULL, DISPLAY_MODES.LOW, DISPLAY_MODES.DND, DISPLAY_MODES.IMPORTANT];
@@ -810,6 +818,7 @@ async function startTower() {
   } else if (integrationResult?.error) {
     document.getElementById('tower-message').textContent = `精準偵測維持降級：${integrationResult.error}`;
   }
+  integrationCoverage = integrationResult?.results || [];
   degradeStaleSessions(state, Date.now());
   discovery.start();
   inbox.start();

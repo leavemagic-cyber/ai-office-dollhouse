@@ -30,11 +30,14 @@ function Get-AiOfficePackage {
     [pscustomobject]@{ installed = $true; version = [string]$package.Version }
 }
 
-$aiOfficeProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+$allProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+$aiOfficeProcesses = @($allProcesses | Where-Object {
     $_.Name -in @('ChatGPT.exe', 'codex.exe', 'Claude.exe', 'claude.exe', 'grok.exe')
 })
 $aiOfficeProcessById = @{}
-foreach ($row in $aiOfficeProcesses) { $aiOfficeProcessById[[int]$row.ProcessId] = $row }
+# Ancestor classification must traverse every intermediate host (cmd, node, conhost,
+# app-server), not just processes whose own name is on the provider allowlist.
+foreach ($row in $allProcesses) { $aiOfficeProcessById[[int]$row.ProcessId] = $row }
 
 function Test-AiOfficeAncestorName {
     param(

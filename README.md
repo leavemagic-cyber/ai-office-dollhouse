@@ -9,8 +9,8 @@ The app does not start agents, dispatch tasks or call a model. It observes struc
 ## What you can see
 
 - Active, waiting, discussing, completed and cancelled work based on lifecycle evidence
-- A dedicated floor for each session that has subagents, with ordinary work sharing a common office floor
-- A permanent Owner role and an Owner floor that appears only when a real decision needs attention
+- A provider-isolated floor for every real session; unrelated providers are never mixed into one workplace
+- A permanent, independent Owner decision floor that stays largest and above every work floor
 - Up to six visible people on each floor, with an exact `+N` count when a real team is larger
 - Full motion, reduced motion, do-not-disturb and important-events-only modes
 - A transparent always-on-top window with click-through drawing areas, DPI awareness and automatic resource-pressure fallback
@@ -26,7 +26,7 @@ AI Office Dollhouse supports Windows 10 and 11 and requires Microsoft Edge WebVi
 3. Run `Install-AI-Office-Dollhouse.cmd`
 4. Open **AI Office Dollhouse** from the desktop or Start menu
 
-The installer places the app in `%LOCALAPPDATA%\Programs\AI Office Dollhouse`, creates shortcuts with the project icon and merges the required lifecycle hooks after making backups. Existing hooks from other tools are preserved, while Codex may still ask you to review and trust its new hook once.
+The installer places the app in `%LOCALAPPDATA%\Programs\AI Office Dollhouse`, creates shortcuts with the project icon and merges the required lifecycle hooks after making backups. Existing hooks from other tools are preserved. Codex hooks are installed at `~/.codex/hooks/hooks.json`; Codex may still ask you to review and trust the hook once before Tier-A events are observed.
 
 Close the app before running `Uninstall-AI-Office-Dollhouse.cmd`. Uninstalling removes this project's hooks, relay, shortcuts and program files, while local event data remains under `%LOCALAPPDATA%\AIOfficeDollhouse` so an update or removal does not erase an active record unexpectedly.
 

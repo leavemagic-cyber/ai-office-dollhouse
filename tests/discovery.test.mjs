@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { EventInboxReader } from '../resources/js/discovery.js';
+import { AutoDiscovery, EventInboxReader } from '../resources/js/discovery.js';
 
 function line(event) {
   return `${JSON.stringify(event)}\n`;
@@ -30,6 +30,49 @@ function createBridge(files) {
     }
   };
 }
+
+test('each presence scan refreshes Tier-D last-seen identity', async () => {
+  const received = [];
+  let timestamp = 1_000;
+  const discovery = new AutoDiscovery({
+    bridge: {
+      discover: async () => ({
+        timestamp: timestamp += 1_000,
+        surfaces: [{ provider: 'codex', surfaceId: 'codex:app', surfaceKind: 'app', installed: true, appOpen: true, processState: 'open' }],
+        system: {}
+      })
+    },
+    onEvent: (event) => received.push(event)
+  });
+  await discovery.scan({ force: true });
+  await discovery.scan({ force: true });
+  assert.equal(received.length, 2);
+  assert.notEqual(received[0].eventId, received[1].eventId);
+  assert.equal(received[1].timestamp, 3_000);
+});
+
+test('two consecutive discovery failures emit one provider adapter disconnect', async () => {
+  const received = [];
+  let calls = 0;
+  const discovery = new AutoDiscovery({
+    bridge: {
+      discover: async () => {
+        calls += 1;
+        if (calls === 1) return { timestamp: 1_000, surfaces: [{ provider: 'codex', surfaceId: 'codex:app' }], system: {} };
+        throw new Error('probe unavailable');
+      }
+    },
+    onEvent: (event) => received.push(event)
+  });
+  await discovery.scan({ force: true });
+  await discovery.scan({ force: true });
+  assert.equal(received.filter((event) => event.eventType === 'adapter_disconnected').length, 0);
+  await discovery.scan({ force: true });
+  const disconnects = received.filter((event) => event.eventType === 'adapter_disconnected');
+  assert.equal(disconnects.length, 1);
+  assert.equal(disconnects[0].provider, 'codex');
+  assert.equal(disconnects[0].observationTier, 'D');
+});
 
 test('event inbox reads bounded incremental slices and carries a partial NDJSON line', async () => {
   const first = { eventId: 'first', eventType: 'turn_started' };

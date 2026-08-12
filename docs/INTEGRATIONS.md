@@ -8,7 +8,7 @@
 
 | Provider | 設定位置 | 事件範圍 |
 |---|---|---|
-| Codex | `~/.codex/hooks.json`；若本機既有 nested hooks，沿用 `~/.codex/hooks/hooks.json` | SessionStart、UserPromptSubmit、Stop、SubagentStart/Stop、SessionEnd、PermissionRequest |
+| Codex | `~/.codex/hooks/hooks.json` | SessionStart、UserPromptSubmit、Stop、SubagentStart/Stop、SessionEnd、PermissionRequest |
 | Claude | `~/.claude/settings.json` | SessionStart、UserPromptSubmit、Stop、SubagentStart/Stop、SessionEnd、Notification |
 | Gemini | `~/.gemini/settings.json` | SessionStart、BeforeAgent、AfterAgent、SessionEnd |
 | Grok | `~/.grok/hooks/ai-office-dollhouse.json` | SessionStart、UserPromptSubmit、Stop、SubagentStart/Stop、SessionEnd、Notification |
@@ -21,7 +21,9 @@ Gemini hook 的 `timeout` 採官方定義的毫秒單位；本專案設定為 `5
 
 ## 多任務與 App／CLI
 
-hook 提供的 `session_id` 是工作分流主鍵。帶 subagent 的 session 各自擁有一層，沒有 subagent 的 session 進入共用辦公層，事件缺少可靠 session 或 parent 時不猜測歸屬。
+hook 提供的 `session_id` 是工作分流主鍵。每個 session 都進入自己的 Provider 隔離樓層；事件缺少可靠 session 或 parent 時不猜測歸屬，也不建立空白共用辦公層。
+
+安裝成功只代表設定檔已寫入。畫面只有最近十分鐘實際收到 Tier-A 結構化事件才標成 `observed`；更早的證據標成 `observed_historical`，Codex 尚未信任 hook 時維持 `installed_unverified`，不會把 App/CLI presence 或快照冒充正在執行。
 
 presence 掃描能分辨已知 App／CLI 表面，但不能讀出 App 內開了幾個任務。Codex App、Claude App 的多任務只有在各 session 真的送出結構化事件時才會分桌顯示。
 

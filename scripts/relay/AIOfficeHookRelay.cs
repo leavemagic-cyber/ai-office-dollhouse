@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 
@@ -183,7 +184,10 @@ internal static class AIOfficeHookRelay
             case "sessionstart": return "session_started";
             case "userpromptsubmit": return "turn_started";
             case "beforeagent": return "turn_started";
-            case "stop": return "turn_completed";
+            case "stop":
+                bool taskCompleted;
+                return TryBooleanValue(payload, out taskCompleted, "task_completed", "taskCompleted") && taskCompleted
+                    ? "task_completed" : "turn_completed";
             case "afteragent": return "turn_completed";
             case "sessionend": return "session_stopped";
             case "subagentstart": return "agent_spawned";
@@ -195,6 +199,7 @@ internal static class AIOfficeHookRelay
             case "permissionrequest": return "owner_input_required";
             case "notification":
                 string kind = TextValue(payload, "notification_type", "notificationType");
+                if (Regex.IsMatch(kind, "^task[_ -]?completed$", RegexOptions.IgnoreCase)) return "task_completed";
                 return kind.IndexOf("permission", StringComparison.OrdinalIgnoreCase) >= 0 || kind.IndexOf("elicitation", StringComparison.OrdinalIgnoreCase) >= 0
                     ? "owner_input_required" : string.Empty;
             default: return string.Empty;
@@ -277,7 +282,7 @@ internal static class AIOfficeHookRelay
         officeEvent["toolName"] = Clip(rawTool, 30);
         officeEvent["observationTier"] = "A";
         officeEvent["sourceConfidence"] = "structured";
-        officeEvent["important"] = eventType == "owner_input_required" || eventType == "session_stopped" || eventType == "agent_failed";
+        officeEvent["important"] = eventType == "owner_input_required" || eventType == "task_completed" || eventType == "session_stopped" || eventType == "agent_failed";
 
         string dataDirectory = Environment.GetEnvironmentVariable("AI_OFFICE_DATA_DIR");
         if (string.IsNullOrWhiteSpace(dataDirectory)) dataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AIOfficeDollhouse");

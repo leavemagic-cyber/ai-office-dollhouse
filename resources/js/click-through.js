@@ -9,7 +9,10 @@
 // Logical pixels, matching the chrome in styles.css: the title bar row plus the resize
 // grip band. The approach margin above the bar buys the toggle time to take effect
 // before the cursor reaches a button.
-export const CHROME = Object.freeze({ bar: 15, approach: 11, edge: 12 });
+export const CHROME = Object.freeze({ bar: 15, approach: 20, edge: 12 });
+// Poll quickly enough that a normal move-and-click on X cannot outrun the native
+// WS_EX_TRANSPARENT hand-off. This is only a cursor-position query, not a render loop.
+export const CLICK_THROUGH_POLL_MS = 50;
 
 /**
  * True when the cursor is over the drawing rather than the chrome, which is when the

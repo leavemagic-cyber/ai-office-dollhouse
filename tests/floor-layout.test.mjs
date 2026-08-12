@@ -11,6 +11,7 @@ import {
   PEOPLE_PER_ANNEX,
   sessionHasSubagents,
   SHARED_FLOOR_KEY,
+  UNKNOWN_FREEZE_MS,
   sharedFloorSessions,
   teamSessions
 } from '../resources/js/floor-layout.js';
@@ -33,7 +34,7 @@ function pod(id, label, helpers = 0, extra = {}) {
   };
 }
 
-test('only a session that opened subagents earns its own floor', () => {
+test('every session keeps a provider-isolated floor', () => {
   const model = {
     providers: {
       codex: { livePods: [pod('c1', 'titan', 2), pod('c2', '單獨查詢', 0)] },
@@ -43,17 +44,16 @@ test('only a session that opened subagents earns its own floor', () => {
     }
   };
   const specs = floorSpecsForModel(model, roomMeta);
-  assert.deepEqual(specs.map((spec) => spec.key), ['owner', 'codex', 'claude', 'claude:2', SHARED_FLOOR_KEY, 'lobby']);
+  assert.deepEqual(specs.map((spec) => spec.key), ['owner', 'codex', 'codex:2', 'claude', 'claude:2', 'gemini', 'lobby']);
   // The floor is named after the project, because that is what the Owner is watching.
   assert.equal(specs[1].title, 'Codex 工事樓・titan');
-  assert.equal(specs[2].title, 'Claude 審閱樓・審稿');
-  assert.equal(specs[3].sessionId, 'l2');
+  assert.equal(specs[3].title, 'Claude 審閱樓・審稿');
+  assert.equal(specs[4].sessionId, 'l2');
   assert.equal(floorKey('grok', 2), 'grok:3');
-  // The two solo sessions share one floor instead of opening two more.
-  assert.deepEqual(sharedFloorSessions(model).map((session) => session.id), ['c2', 'g1']);
+  assert.deepEqual(sharedFloorSessions(model), []);
 });
 
-test('a building with no subagent teams is one shared office, not four provider floors', () => {
+test('solo work never mixes providers on a shared floor', () => {
   const model = {
     providers: {
       codex: { livePods: [pod('c1', '單獨查詢')] },
@@ -62,8 +62,8 @@ test('a building with no subagent teams is one shared office, not four provider 
       grok: { livePods: [pod('k1', '查核')] }
     }
   };
-  assert.deepEqual(floorSpecsForModel(model, roomMeta).map((spec) => spec.key), ['owner', SHARED_FLOOR_KEY, 'lobby']);
-  assert.deepEqual(floorSpecsForModel({ providers: {} }, roomMeta).map((spec) => spec.key), ['owner', SHARED_FLOOR_KEY, 'lobby']);
+  assert.deepEqual(floorSpecsForModel(model, roomMeta).map((spec) => spec.key), ['owner', 'codex', 'grok', 'lobby']);
+  assert.deepEqual(floorSpecsForModel({ providers: {} }, roomMeta).map((spec) => spec.key), ['owner', 'lobby']);
   assert.equal(sessionHasSubagents(pod('x', 'x', 0)), false);
   assert.equal(sessionHasSubagents(pod('x', 'x', 1)), true);
   assert.equal(sessionHasSubagents({ agents: [{ isMain: true }], overflowAgentCount: 4 }), true);
@@ -83,8 +83,8 @@ test('active-only layout removes idle shells and keeps only floors with useful w
     }
   };
   const specs = floorSpecsForModel(model, roomMeta, { activeOnly: true });
-  // Codex's oversized team keeps one floor; Claude's lone snapshot job joins the shared one.
-  assert.deepEqual(specs.map((spec) => spec.key), ['codex', SHARED_FLOOR_KEY]);
+  // Owner is permanent; the live and snapshot work remain on provider-isolated floors.
+  assert.deepEqual(specs.map((spec) => spec.key), ['owner', 'codex', 'claude']);
 });
 
 test('active-only layout surfaces a short important event without reviving idle provider floors', () => {
@@ -101,8 +101,9 @@ test('active-only layout surfaces a short important event without reviving idle 
     }
   };
   const specs = floorSpecsForModel(model, roomMeta, { activeOnly: true });
-  // The session is gone, so its cue plays in the shared office rather than conjuring a floor.
-  assert.deepEqual(specs.map((spec) => spec.key), ['owner', SHARED_FLOOR_KEY]);
+  // The session is gone: Owner can receive the delivery, but no empty shared office is
+  // conjured for the missing source floor.
+  assert.deepEqual(specs.map((spec) => spec.key), ['owner']);
   assert.deepEqual(floorForEvent(model, 'gemini', model.recentEvents[0]), { room: SHARED_FLOOR_KEY, annexIndex: 0 });
 });
 
@@ -128,9 +129,8 @@ test('a cue lands on the floor its own session is standing on', () => {
     }
   };
   assert.deepEqual(floorForEvent(model, 'codex', { sessionId: 'one' }), { room: 'codex', annexIndex: 0 });
-  // 'two' has no subagents, so it never owns a floor: its cue plays downstairs.
-  assert.deepEqual(floorForEvent(model, 'codex', { sessionId: 'two' }), { room: SHARED_FLOOR_KEY, annexIndex: 0 });
-  assert.deepEqual(floorForEvent(model, 'codex', { sessionId: 'three' }), { room: 'codex', annexIndex: 1 });
+  assert.deepEqual(floorForEvent(model, 'codex', { sessionId: 'two' }), { room: 'codex', annexIndex: 1 });
+  assert.deepEqual(floorForEvent(model, 'codex', { sessionId: 'three' }), { room: 'codex', annexIndex: 2 });
   assert.deepEqual(floorForEvent(model, 'codex', {}), { room: SHARED_FLOOR_KEY, annexIndex: 0 });
 });
 
@@ -141,25 +141,30 @@ test('one floor fits fourteen small figures before the count is summarised', () 
   assert.equal(annexCountForDisplay([roster(15)], []), 2);
 });
 
-test('historical hook-open surfaces do not keep unknown workers or empty annexes visible', () => {
+test('unknown Tier-A work freezes even when lower-confidence presence expires', () => {
   const now = 2_000_000;
   const team = { pods: {
     stale: { lifecycle: 'active', activity: 'unknown', lastActivityAt: now - 1_000, agents: Array.from({ length: 20 }, () => ({})) }
   } };
   const historicalHook = [{ provider: 'grok', observationTier: 'A', appOpen: true, lastSeenAt: now - 500 }];
   assert.equal(currentPresenceOpen(historicalHook, 'grok', now), false);
-  assert.deepEqual(livePodsForDisplay(team, historicalHook, 'grok', now), []);
+  assert.deepEqual(livePodsForDisplay(team, historicalHook, 'grok', now), [team.pods.stale]);
   assert.equal(annexCountForDisplay([], []), 1);
+});
+
+test('an unknown freeze is bounded and ancient replayed work does not reopen a floor', () => {
+  const now = 9_000_000;
+  const fresh = { lifecycle: 'active', activity: 'unknown', unknownSinceAt: now - UNKNOWN_FREEZE_MS + 1, lastActivityAt: now - 20_000 };
+  const expired = { lifecycle: 'active', activity: 'unknown', unknownSinceAt: now - UNKNOWN_FREEZE_MS, lastActivityAt: now - 20_000 };
+  assert.deepEqual(livePodsForDisplay({ pods: { fresh, expired } }, [], 'grok', now), [fresh]);
 });
 
 test('the headcount counts real people, not the ones that fit on a plate', async () => {
   const { totalOccupants, SINGLE_FLOOR_CAPACITY } = await import('../resources/js/renderer.js');
-  // Ten workers in one team plus the Owner. Counting the drawn occupants instead of the
-  // real roster reported seven, which quietly chose the single-floor view and dropped
-  // four people with no "+N" anywhere.
+  // Owner has a separate permanent room and does not consume a worker seat.
   const model = { providers: { codex: { livePods: [pod('big', '大隊', 9)] }, claude: { livePods: [] }, gemini: { livePods: [] }, grok: { livePods: [] } } };
-  assert.equal(totalOccupants(model), 11);
-  assert.ok(totalOccupants(model) > SINGLE_FLOOR_CAPACITY, 'eleven people must not fit the single floor');
+  assert.equal(totalOccupants(model), 10);
+  assert.ok(totalOccupants(model) > SINGLE_FLOOR_CAPACITY, 'ten workers must not fit one work floor');
 });
 
 test('fresh Tier-D presence may freeze an unknown live team without inventing new work', () => {

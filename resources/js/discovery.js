@@ -1,7 +1,10 @@
 function surfaceEvent(surface, timestamp) {
   const stateKey = [surface.installed, surface.appOpen, surface.processState, surface.version].join(':');
   return {
-    eventId: `presence:${surface.surfaceId}:${stateKey}`,
+    // Every scan is a fresh Tier-D observation. Reusing the same ID caused the domain
+    // deduplicator to discard all later scans, so lastSeenAt expired even while the app
+    // was still open and the office then animated stale snapshot work instead.
+    eventId: `presence:${surface.surfaceId}:${timestamp}:${stateKey}`,
     timestamp,
     provider: surface.provider,
     surfaceId: surface.surfaceId,
@@ -87,6 +90,8 @@ export class AutoDiscovery {
     this.intervalMs = intervalMs;
     this.timer = null;
     this.running = false;
+    this.failureCount = 0;
+    this.lastProviders = new Set();
   }
 
   async scan({ force = false } = {}) {
@@ -96,12 +101,34 @@ export class AutoDiscovery {
     try {
       const result = await this.bridge.discover();
       const timestamp = Number(result.timestamp) || Date.now();
+      this.failureCount = 0;
+      this.lastProviders = new Set((result.surfaces || []).map((surface) => surface.provider).filter(Boolean));
       for (const surface of result.surfaces || []) this.onEvent(surfaceEvent(surface, timestamp));
       this.onSystemMetrics?.(result.system || {});
       this.onStatus?.({ ok: true, lastScanAt: timestamp, error: null });
       return result;
     } catch (error) {
-      this.onStatus?.({ ok: false, lastScanAt: Date.now(), error: String(error.message || error) });
+      const timestamp = Date.now();
+      this.failureCount += 1;
+      // One transient probe failure is harmless. Two consecutive failures mean the
+      // lower-confidence adapter can no longer refresh presence, so immediately freeze
+      // any Tier-A pods for those providers instead of waiting five minutes.
+      if (this.failureCount === 2) {
+        for (const provider of this.lastProviders) {
+          this.onEvent({
+            eventId: `adapter-disconnected:${provider}:${timestamp}`,
+            timestamp,
+            provider,
+            surfaceId: `${provider}:adapter`,
+            surfaceKind: 'adapter',
+            eventType: 'adapter_disconnected',
+            observationTier: 'D',
+            sourceConfidence: 'inferred',
+            important: true
+          });
+        }
+      }
+      this.onStatus?.({ ok: false, lastScanAt: timestamp, error: String(error.message || error) });
       return null;
     } finally {
       this.running = false;

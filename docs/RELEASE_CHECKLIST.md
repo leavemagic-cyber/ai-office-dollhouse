@@ -1,6 +1,6 @@
-# 0.3.1 發行檢查表
+# 0.3.2 發行檢查表
 
-日期：2026-08-12
+日期：2026-08-13
 
 CI 修補：`resources/js/neutralino.d.ts` 已固定使用 LF，避免 Windows runner 自動轉成 CRLF 後造成錯誤的雜湊失敗。
 
@@ -9,8 +9,8 @@ CI 修補：`resources/js/neutralino.d.ts` 已固定使用 LF，避免 Windows r
 3. PASS　四個 Provider 身分色相對亮度比為 1.104
 4. PASS　`facing = -1` 會鏡像整個人偶
 5. PASS　站姿、走姿、坐姿與手肘角度由幾何測試覆蓋
-6. PASS　樓層由 Owner、subagent session、共用辦公層與入口大廳組成
-7. PASS　subagent 判定依 session 人數，不依賴 `isMain`
+6. PASS　Owner 是獨立、永久、最大且不透明的頂層，不與工作樓層合併
+7. PASS　每個 session 使用 Provider 隔離樓層，無關 Provider 不混層
 8. PASS　單層最多六人，更多人使用 `+N`，`figureScale` 固定為 1
 9. PASS　`totalOccupants()` 依原始 session 人數計算
 10. PASS　超過十二層的 cue 收斂到該 Provider 最後一層
@@ -28,4 +28,4 @@ CI 修補：`resources/js/neutralino.d.ts` 已固定使用 LF，避免 Windows r
 
 另外修正三個提示未涵蓋的問題：四人團隊曾只有三張工作桌、Claude hook 的 Windows 路徑曾被 Bash 吃掉反斜線、程式與捷徑曾使用 Neutralino 預設圖示。
 
-最終驗證為 79/79 項測試通過，專案檢查涵蓋 63 個檔案與 22 個 JavaScript 檔，8 小時虛擬 soak 共處理 12,000 個事件，發行包內 28 個檔案均通過逐檔 SHA-256 與解壓複驗。
+最終驗證為 90/90 項測試通過；專案檢查涵蓋 64 個檔案與 23 個 JavaScript 檔；8 小時虛擬 soak 共處理 12,000 個事件並清空 pod／agent／delegation，事件環形上限維持 500；發行包與 ZIP 內 28 個 manifest 檔一致。ZIP SHA-256 由封裝輸出與 GitHub Release 記錄，不寫回包內文件，避免壓縮檔自我參照造成雜湊循環。Grok 修後審查結論為 `NO MUST-FIX`；最終審查明確使用 `grok-4.6`。

@@ -3,6 +3,7 @@ const ACTION_ALLOWLIST = new Set(['status', 'install']);
 const SNAPSHOT_PROVIDERS = ['codex', 'claude', 'gemini', 'grok'];
 const INSTANCE_STALE_MS = 45_000;
 const INSTANCE_HEARTBEAT_MS = 10_000;
+export const CLOSE_CLEANUP_TIMEOUT_MS = 250;
 
 function quoteWindows(value) {
   return `"${String(value).replaceAll('"', '\\"')}"`;
@@ -51,8 +52,7 @@ export class NativeBridge {
     if (!this.isNative) return true;
     globalThis.Neutralino.init();
     globalThis.Neutralino.events.on('windowClose', async () => {
-      await this.releaseSingleInstance();
-      globalThis.Neutralino.app.exit();
+      await this.close();
     });
     const localAppData = await globalThis.Neutralino.os.getEnv('LOCALAPPDATA');
     this.dataDirectory = `${localAppData}\\AIOfficeDollhouse`;
@@ -365,7 +365,14 @@ export class NativeBridge {
   }
   async close() {
     if (!this.isNative) return;
-    await this.releaseSingleInstance();
+    // Lock cleanup is best-effort and time-bounded. A filesystem race, stale lock or
+    // unresolved native promise must never make the visible close button appear dead.
+    try {
+      await Promise.race([
+        this.releaseSingleInstance(),
+        sleep(CLOSE_CLEANUP_TIMEOUT_MS)
+      ]);
+    } catch { /* exit still wins */ }
     await globalThis.Neutralino.app.exit();
   }
   async snapshot(path) { if (this.isNative) await globalThis.Neutralino.window.snapshot(path); }

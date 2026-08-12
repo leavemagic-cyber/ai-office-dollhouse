@@ -145,7 +145,10 @@ try {
         'sessionstart' { 'session_started' }
         'userpromptsubmit' { 'turn_started' }
         'beforeagent' { 'turn_started' }
-        'stop' { 'turn_completed' }
+        'stop' {
+            $explicitCompletion = Get-AiOfficeValue $payload @('task_completed', 'taskCompleted')
+            if ($explicitCompletion -eq $true) { 'task_completed' } else { 'turn_completed' }
+        }
         'afteragent' { 'turn_completed' }
         'sessionend' { 'session_stopped' }
         'subagentstart' { 'agent_spawned' }
@@ -157,7 +160,9 @@ try {
         'permissionrequest' { 'owner_input_required' }
         'notification' {
             $notificationType = [string](Get-AiOfficeValue $payload @('notification_type', 'notificationType'))
-            if ($notificationType -match 'permission|elicitation') { 'owner_input_required' } else { '' }
+            if ($notificationType -match '^task[_ -]?completed$') { 'task_completed' }
+            elseif ($notificationType -match 'permission|elicitation') { 'owner_input_required' }
+            else { '' }
         }
         default { '' }
     }
@@ -191,7 +196,7 @@ try {
         toolName = if ($rawToolName) { $rawToolName.Substring(0, [Math]::Min(30, $rawToolName.Length)) } else { '' }
         observationTier = 'A'
         sourceConfidence = 'structured'
-        important = $eventType -in @('owner_input_required', 'session_stopped', 'agent_failed')
+        important = $eventType -in @('owner_input_required', 'task_completed', 'session_stopped', 'agent_failed')
     }
 
     $dataDirectory = if (-not [string]::IsNullOrWhiteSpace($env:AI_OFFICE_DATA_DIR)) {

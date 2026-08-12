@@ -25,6 +25,8 @@ button { font: inherit; }
 }
 
 .tower-bar {
+  position: relative;
+  z-index: 10;
   display: flex;
   flex: 0 0 15px;
   align-items: center;
@@ -55,7 +57,7 @@ button { font: inherit; }
   letter-spacing: -2px;
 }
 
-.window-actions { display: flex; align-items: center; gap: 1px; }
+.window-actions { position: relative; z-index: 11; display: flex; align-items: center; gap: 1px; }
 .window-actions button,
 #tower-resize {
   display: grid;
@@ -89,9 +91,9 @@ button { font: inherit; }
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .55));
 }
 
+.owner-floor,
 .tower-floors {
   display: flex;
-  flex: 1 1 auto;
   flex-direction: column;
   align-items: center;
   gap: 4px;
@@ -100,6 +102,17 @@ button { font: inherit; }
   overflow: hidden;
   background: transparent;
 }
+.owner-floor {
+  position: relative;
+  z-index: 6;
+  flex: 0 0 auto;
+  width: 100%;
+  isolation: isolate;
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, .38));
+}
+.tower-floors { flex: 1 1 auto; }
+.tower-floors .floor-card { width: 82%; }
+.owner-floor .floor-card { width: 100%; opacity: 1; }
 .floor-card {
   flex: 0 0 auto;
   width: 100%;
@@ -133,6 +146,7 @@ button { font: inherit; }
 }
 /* The artwork must never intercept a click: the overlay watches work, it does not take
    part in it. Only the title bar, its buttons and the resize grips stay interactive. */
+.owner-floor,
 .tower-floors,
 .floor-card,
 .floor-scene,
@@ -148,7 +162,7 @@ button { font: inherit; }
 }
 
 /* Grab any edge or corner to resize; the office scales with the overlay width. */
-.tower-grips { position: absolute; inset: 0; pointer-events: none; }
+.tower-grips { position: absolute; z-index: 2; inset: 0; pointer-events: none; }
 .tower-grip {
   position: absolute;
   z-index: 3;
@@ -172,7 +186,7 @@ button { font: inherit; }
   position: absolute;
   right: 0;
   bottom: 0;
-  z-index: 2;
+  z-index: 4;
   color: rgba(205, 221, 229, .74);
   cursor: nwse-resize;
   opacity: .36;

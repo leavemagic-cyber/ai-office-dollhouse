@@ -4,11 +4,15 @@ export const PEOPLE_PER_ANNEX = 14;
 // Owner, 2026-08-12: one floor shows at most six people. Above that the figures would
 // have to be shrunk to fit, and a shrunken figure is a worse answer than an honest "+N".
 export const FLOOR_WORKSTATIONS = 6;
-// Solo work of every provider shares this floor. Owner, 2026-08-11: opening subagents is
-// what earns a session its own floor; a single worker joins the shared office instead.
+// Retained only as a neutral destination for a short cue whose session can no longer be
+// matched. Live work never mixes providers on this floor.
 export const SHARED_FLOOR_KEY = 'shared';
 
 const LIVE_EVENT_FRESH_MS = 10 * 60_000;
+// Unknown is a bounded uncertainty state, not a permanent second kind of "live".
+// A real adapter disconnect gets ten minutes of frozen visibility; an ancient replay
+// whose uncertainty began long ago expires immediately instead of rebuilding old floors.
+export const UNKNOWN_FREEZE_MS = 10 * 60_000;
 const CURRENT_PRESENCE_FRESH_MS = 60_000;
 const IMPORTANT_EVENT_FRESH_MS = 20_000;
 
@@ -22,9 +26,8 @@ export function sessionPopulation(session) {
 }
 
 /**
- * A session earns its own floor only when it actually opened subagents (Owner, 2026-08-11):
- * one Claude project with a subagent team is a floor, three lone CLI turns are not. The
- * test is headcount rather than the isMain flag, which upstream data does not always set.
+ * Whether a session has subagents remains useful for population and presentation, but
+ * every live session now owns a provider-isolated floor regardless of this value.
  */
 export function sessionHasSubagents(session) {
   return sessionPopulation(session) > 1;
@@ -53,26 +56,25 @@ export function sessionsForProvider(providerState) {
     label: work.label,
     index,
     source: 'snapshot',
-    activity: 'working',
+    // A snapshot proves that a work record exists, not that it is executing now.
+    activity: 'snapshot',
     // Snapshot work lists helpers only, so the main worker is added on top.
     population: Math.max(1, 1 + (work.agents || []).length),
     team: (work.agents || []).length > 0 || Number(work.openChildren) > 0
   }));
 }
 
-/** The subagent-bearing sessions of one provider, capped at the renderable floor count. */
+/** One provider's sessions, each on its own floor, capped at the renderable count. */
 export function teamSessions(model, room) {
   if (!PROVIDER_ROOMS.includes(room)) return [];
   return sessionsForProvider(model?.providers?.[room])
-    .filter((session) => session.team)
     .slice(0, MAX_RENDERED_ANNEXES_PER_PROVIDER);
 }
 
-/** Everyone who is not part of a subagent team, from every provider, on one floor. */
+/** Compatibility surface: cross-provider live work is never co-located. */
 export function sharedFloorSessions(model) {
-  return PROVIDER_ROOMS.flatMap((room) => sessionsForProvider(model?.providers?.[room])
-    .filter((session) => !session.team)
-    .map((session) => ({ ...session, room })));
+  void model;
+  return [];
 }
 
 function titleFor(roomMeta, room) {
@@ -86,14 +88,16 @@ function recentImportantEvents(model, room) {
     if (age < 0 || age > IMPORTANT_EVENT_FRESH_MS) return false;
     // Finished work is reported to the Owner in person, so a delivery has to be able to
     // open the Owner floor even when the inbox is empty (signature J).
-    if (room === 'owner') return ['owner_input_required', 'task_completed', 'session_stopped'].includes(event?.eventType) || event?.targetProvider === 'owner';
+    if (room === 'owner') return ['owner_input_required', 'task_completed'].includes(event?.eventType) || event?.targetProvider === 'owner';
     if (room === 'lobby') return event?.eventType === 'discussion_started' || (event?.participantProviders || []).length > 1;
     return event?.provider === room && Boolean(event?.important);
   });
 }
 
 export function floorPopulationForDisplay(model, room, annexIndex = 0) {
-  if (room === 'owner') return Number(model?.owner?.inboxCount || 0) > 0 ? 1 + Math.min(3, Number(model.owner.inboxCount)) : 0;
+  // Owner is the permanent resident. Visitors add to the room; they never determine
+  // whether the Owner exists.
+  if (room === 'owner') return 1 + Math.min(3, Number(model?.owner?.inboxCount || 0));
   if (room === 'lobby') {
     return Object.values(model?.providers || {}).reduce((sum, provider) => (
       sum + (provider?.livePods || []).filter((pod) => pod.activity === 'discussing').length
@@ -113,10 +117,9 @@ export function floorHasUsefulWork(spec, model) {
   if (!spec) return false;
   if (floorPopulationForDisplay(model, spec.room, spec.annexIndex) > 0) return true;
   if (spec.room === SHARED_FLOOR_KEY) {
-    // A provider with a live event but no team floor still has to land somewhere, and the
-    // shared office is where work without a floor of its own belongs.
-    return PROVIDER_ROOMS.some((room) => recentImportantEvents(model, room)
-      .some((event) => floorForEvent(model, room, event).room === SHARED_FLOOR_KEY));
+    // Shared live work is forbidden. An unmatched transient cue is skipped instead of
+    // opening an empty cross-provider shell that looks like a workplace.
+    return false;
   }
   const events = recentImportantEvents(model, spec.room);
   if (!events.length) return false;
@@ -128,12 +131,12 @@ export function floorSpecsForModel(model, roomMeta, options = {}) {
   const activeOnly = Boolean(options.activeOnly);
   const specs = [];
   const ownerSpec = { key: 'owner', room: 'owner', annexIndex: 0, annexCount: 1, title: titleFor(roomMeta, 'owner') };
-  if (!activeOnly || floorHasUsefulWork(ownerSpec, model)) specs.push(ownerSpec);
+  // The Owner decision room is an independent, permanent top floor. activeOnly only
+  // applies to work floors and must never hide or merge this room.
+  specs.push(ownerSpec);
   for (const room of PROVIDER_ROOMS) {
     const sessions = teamSessions(model, room);
-    const allSessions = PROVIDER_ROOMS.includes(room)
-      ? sessionsForProvider(model?.providers?.[room]).filter((session) => session.team).length
-      : 0;
+    const allSessions = sessionsForProvider(model?.providers?.[room]).length;
     for (const [annexIndex, session] of sessions.entries()) {
       // The floor is named after the project or task, not after the provider: the Owner
       // needs to see which piece of work owns the floor.
@@ -151,14 +154,6 @@ export function floorSpecsForModel(model, roomMeta, options = {}) {
       if (!activeOnly || floorHasUsefulWork(spec, model)) specs.push(spec);
     }
   }
-  const sharedSpec = {
-    key: SHARED_FLOOR_KEY,
-    room: SHARED_FLOOR_KEY,
-    annexIndex: 0,
-    annexCount: 1,
-    title: titleFor(roomMeta, SHARED_FLOOR_KEY)
-  };
-  if (!activeOnly || floorHasUsefulWork(sharedSpec, model)) specs.push(sharedSpec);
   const lobbySpec = { key: 'lobby', room: 'lobby', annexIndex: 0, annexCount: 1, title: titleFor(roomMeta, 'lobby') };
   if (!activeOnly || floorHasUsefulWork(lobbySpec, model)) specs.push(lobbySpec);
   return specs;
@@ -175,10 +170,15 @@ export function currentPresenceOpen(surfaces, provider, now = Date.now()) {
 }
 
 export function livePodsForDisplay(team, surfaces, provider, now = Date.now()) {
-  const presenceOpen = currentPresenceOpen(surfaces, provider, now);
   return Object.values(team?.pods || {}).filter((pod) => {
     if (pod?.lifecycle !== 'active') return false;
-    if (pod.activity === 'unknown') return presenceOpen;
+    // A disconnected adapter changes certainty, not lifecycle. Freeze the last reliable
+    // Tier-A pod in grey for a bounded interval. `unknownSinceAt` is the evidence boundary;
+    // falling back to lastActivityAt keeps older persisted state safe to replay.
+    if (pod.activity === 'unknown') {
+      const unknownAge = now - Number(pod.unknownSinceAt || pod.lastActivityAt || 0);
+      return unknownAge >= 0 && unknownAge < UNKNOWN_FREEZE_MS;
+    }
     const age = now - Number(pod.lastActivityAt || 0);
     return age >= 0 && age < LIVE_EVENT_FRESH_MS;
   });
@@ -195,14 +195,13 @@ export function annexCountForDisplay(livePods = [], snapshotWork = []) {
 }
 
 /**
- * Which floor a session is standing on. A subagent team owns its own floor; anything else
- * -- a lone worker, a session that has already gone, an unmatched id -- is downstairs in
- * the shared office. Used to aim signature cues at the right plate.
+ * Which provider floor a session is standing on. Missing or expired session IDs return a
+ * neutral compatibility destination that is never rendered as an active shared floor.
  */
 export function floorForSession(model, room, sessionId) {
   const shared = { room: SHARED_FLOOR_KEY, annexIndex: 0 };
   if (!PROVIDER_ROOMS.includes(room)) return shared;
-  const teams = sessionsForProvider(model?.providers?.[room]).filter((session) => session.team);
+  const teams = sessionsForProvider(model?.providers?.[room]);
   const index = teams.findIndex((session) => matchesSession(session.id, sessionId));
   if (index < 0) return shared;
   // A team past the rendered floor cap is summarised on the last floor, not moved into

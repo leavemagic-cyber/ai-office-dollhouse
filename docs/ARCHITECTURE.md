@@ -4,12 +4,11 @@
 
 ```text
 Owner
-├─ 帶 subagent 的 session → 各自一層
-├─ 沒有 subagent 的 session → 共用辦公層
+├─ 每一個真實 session → Provider 隔離的獨立樓層
 └─ 跨 Provider 討論 → 入口大廳
 ```
 
-Owner 是永久的治理語意，但畫面只在真的需要決定時顯示 Owner 樓層。Session 是否擁有自己的樓層由實際人數判定，不依賴上游不一定會提供的 `isMain`。
+Owner 是永久、獨立且最大的頂層決策室，不會因沒有請示而消失，也不會合併到工作樓層。每一個有可靠生命週期證據的 session 各自擁有 Provider 隔離樓層，任何單一樓層都不混放無關 Provider。
 
 工作樓層固定有六張獨立桌，每桌包含自己的低屏風和螢幕。單層最多顯示六人，更多人以精確 `+N` 數量摘要呈現，人偶維持原尺寸。每個 Provider 最多同時繪製十二個 session 樓層，超出的 session 與 cue 收斂到該 Provider 最後一層，不會被錯放到共用辦公層。
 
@@ -18,11 +17,11 @@ Owner 是永久的治理語意，但畫面只在真的需要決定時顯示 Owne
 - Tier A 是相容 hook 送出的結構化生命週期事件，可用來顯示 session、工作輪次、subagent、請示與結束
 - Tier D 是套件、PATH 與受限程序 presence，只能說明工具已安裝、已開啟或狀態未知
 
-Presence 不會生成人員，程序結束也不代表任務完成。來源中斷時，仍在畫面上的工作會降為 unknown，只有明確事件才能標示完成或取消。
+Presence 不會生成人員，程序結束也不代表任務完成。來源中斷時，仍在畫面上的工作會降為 unknown 並停止動畫；unknown 最長保留十分鐘，過期重播不會重新開樓層，只有明確事件才能標示完成或取消。
 
 ## 顯示流程
 
-`floorSpecsForModel(..., { activeOnly: true })` 只保留有可靠人口、近期重要事件、Owner 請示或活躍討論的樓層。沒有有效樓層時，原生視窗會隱藏且不取得焦點。
+`floorSpecsForModel(..., { activeOnly: true })` 永遠保留 Owner 頂層，只在有可靠人口或活躍討論時加入工作樓層；不會為對不上 session 的事件開出空白共用辦公層。
 
 Canvas 提供 2:1 軸測與平面圖兩種投影。人物、家具和 cue 共用深度排序，樓層切換使用本機時間軸，不需要模型生成動畫。
 

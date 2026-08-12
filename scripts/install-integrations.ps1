@@ -208,10 +208,15 @@ function Install-AiOfficeProvider {
     $userRoot = if ([string]::IsNullOrWhiteSpace($ConfigRoot)) { [Environment]::GetFolderPath('UserProfile') } else { $ConfigRoot }
     switch ($TargetProvider) {
         'codex' {
-            # Codex discovers the user hook file at ~/.codex/hooks.json.
-            $targetPath = Join-Path $userRoot '.codex\hooks.json'
+            # Codex 0.146+ discovers user hooks in ~/.codex/hooks/hooks.json. The
+            # top-level ~/.codex/hooks.json is not loaded by the current CLI.
+            $targetPath = Join-Path $userRoot '.codex\hooks\hooks.json'
+            $legacyPath = Join-Path $userRoot '.codex\hooks.json'
             Merge-AiOfficeJsonHooks $targetPath 'codex' @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd', 'PermissionRequest') 3
-            return [pscustomobject]@{ provider = 'codex'; installed = $true; path = $targetPath; requiresTrust = $true; note = 'Review and trust this hook once in Codex /hooks.' }
+            # Remove only the AI Office groups from the legacy file. Other hooks remain
+            # untouched and the removal routine creates its own backup.
+            $legacyMigrated = Remove-AiOfficeJsonHooks $legacyPath
+            return [pscustomobject]@{ provider = 'codex'; installed = $true; path = $targetPath; requiresTrust = $true; legacyMigrated = $legacyMigrated; note = 'Review and trust this hook once in Codex /hooks.' }
         }
         'claude' {
             $targetPath = Join-Path $userRoot '.claude\settings.json'
@@ -249,16 +254,19 @@ function Get-AiOfficeStatus {
     param([string]$TargetProvider)
     $userRoot = if ([string]::IsNullOrWhiteSpace($ConfigRoot)) { [Environment]::GetFolderPath('UserProfile') } else { $ConfigRoot }
     $paths = @(switch ($TargetProvider) {
-        'codex' { @((Join-Path $userRoot '.codex\hooks\hooks.json'), (Join-Path $userRoot '.codex\hooks.json')) }
+        'codex' { @((Join-Path $userRoot '.codex\hooks\hooks.json')) }
         'claude' { @((Join-Path $userRoot '.claude\settings.json')) }
         'gemini' { @((Join-Path $userRoot '.gemini\settings.json')) }
         'grok' { @((Join-Path $userRoot '.grok\hooks\ai-office-dollhouse.json')) }
     })
     $activePath = $paths | Where-Object { Test-AiOfficeMarker $_ } | Select-Object -First 1
+    $legacyPath = if ($TargetProvider -eq 'codex') { Join-Path $userRoot '.codex\hooks.json' } else { '' }
     [pscustomobject]@{
         provider = $TargetProvider
         installed = [bool]$activePath
         path = if ($activePath) { $activePath } else { $paths[0] }
+        legacyDetected = [bool]($legacyPath -and (Test-AiOfficeMarker $legacyPath))
+        requiresTrust = ($TargetProvider -eq 'codex')
         relayAvailable = (Test-Path -LiteralPath $relaySourceExe) -or (Test-Path -LiteralPath $relaySourceFallback)
     }
 }

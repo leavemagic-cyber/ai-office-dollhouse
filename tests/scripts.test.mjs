@@ -96,6 +96,23 @@ test('compiled hook relay is private, fail-open, and provider-aware', { skip: pr
   assert.equal(JSON.parse(stored).eventType, 'turn_started');
 });
 
+test('only an explicit completion signal produces task_completed', { skip: process.platform !== 'win32' }, () => {
+  const relay = join(root, 'scripts', 'relay', 'AIOfficeHookRelay.exe');
+  for (const runner of [
+    (input, dataDirectory) => runScript('hook-relay.ps1', ['-Provider', 'codex', '-SurfaceKind', 'auto'], { input, env: { ...process.env, AI_OFFICE_DATA_DIR: dataDirectory } }),
+    (input, dataDirectory) => spawnSync(relay, ['codex', 'auto'], { cwd: root, encoding: 'utf8', input, env: { ...process.env, AI_OFFICE_DATA_DIR: dataDirectory } })
+  ]) {
+    const ordinaryRoot = mkdtempSync(join(tmpdir(), 'ai-office-turn-finish-'));
+    const explicitRoot = mkdtempSync(join(tmpdir(), 'ai-office-task-finish-'));
+    const ordinary = runner(JSON.stringify({ session_id: 'ordinary', hook_event_name: 'Stop' }), ordinaryRoot);
+    const explicit = runner(JSON.stringify({ session_id: 'explicit', hook_event_name: 'Stop', task_completed: true }), explicitRoot);
+    assert.equal(ordinary.status, 0, ordinary.stderr);
+    assert.equal(explicit.status, 0, explicit.stderr);
+    assert.equal(JSON.parse(readFileSync(join(ordinaryRoot, 'events.ndjson'), 'utf8')).eventType, 'turn_completed');
+    assert.equal(JSON.parse(readFileSync(join(explicitRoot, 'events.ndjson'), 'utf8')).eventType, 'task_completed');
+  }
+});
+
 test('hook relays only present subagent stop as terminal when the payload proves an outcome', { skip: process.platform !== 'win32' }, () => {
   const relay = join(root, 'scripts', 'relay', 'AIOfficeHookRelay.exe');
   assert.equal(existsSync(relay), true, 'run scripts/build-relay.ps1 first');
@@ -170,7 +187,9 @@ test('integration installer backs up and merges idempotently in an isolated root
   const args = ['-Provider', 'all', '-Action', 'install', '-ConfigRoot', configRoot];
   const first = runScript('install-integrations.ps1', args);
   assert.equal(first.status, 0, first.stderr);
-  assert.equal(lastJsonLine(first.stdout).ok, true);
+  const firstResult = lastJsonLine(first.stdout);
+  assert.equal(firstResult.ok, true);
+  assert.match(firstResult.results.find((item) => item.provider === 'codex').path, /[\\/]\.codex[\\/]hooks[\\/]hooks\.json$/i);
   const second = runScript('install-integrations.ps1', args);
   assert.equal(second.status, 0, second.stderr);
 
@@ -202,7 +221,7 @@ test('integration installer backs up and merges idempotently in an isolated root
   assert.ok(readdirSync(dirname(claudePath)).some((name) => name.startsWith('settings.json.bak_ai_office_')));
 
   const expected = [
-    join(configRoot, '.codex', 'hooks.json'),
+    join(configRoot, '.codex', 'hooks', 'hooks.json'),
     join(configRoot, '.gemini', 'settings.json'),
     join(configRoot, '.grok', 'hooks', 'ai-office-dollhouse.json')
   ];
@@ -216,7 +235,7 @@ test('integration installer serializes newly created hook groups as arrays', { s
   assert.equal(lastJsonLine(result.stdout).ok, true);
 
   const settings = [
-    join(configRoot, '.codex', 'hooks.json'),
+    join(configRoot, '.codex', 'hooks', 'hooks.json'),
     join(configRoot, '.claude', 'settings.json'),
     join(configRoot, '.gemini', 'settings.json'),
     join(configRoot, '.grok', 'hooks', 'ai-office-dollhouse.json')

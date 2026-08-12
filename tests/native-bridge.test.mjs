@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { NativeBridge } from '../resources/js/native-bridge.js';
+import { CLOSE_CLEANUP_TIMEOUT_MS, NativeBridge } from '../resources/js/native-bridge.js';
 
 function withNativeWindow(windowApi) {
   const neutralinoBefore = Object.getOwnPropertyDescriptor(globalThis, 'Neutralino');
@@ -52,6 +52,28 @@ test('automatic show does not restore or focus a non-minimized overlay', async (
 
   await new NativeBridge().show({ focus: false });
   assert.deepEqual(calls, ['isMinimized', 'show']);
+});
+
+test('close exits even when stale-lock cleanup fails', async (t) => {
+  let exited = 0;
+  const restore = withNativeRuntime({ app: { exit: async () => { exited += 1; } } });
+  t.after(restore);
+  const bridge = new NativeBridge();
+  bridge.releaseSingleInstance = async () => { throw new Error('locked'); };
+  await bridge.close();
+  assert.equal(exited, 1);
+});
+
+test('close exits after a bounded wait when lock cleanup never settles', async (t) => {
+  let exited = 0;
+  const restore = withNativeRuntime({ app: { exit: async () => { exited += 1; } } });
+  t.after(restore);
+  const bridge = new NativeBridge();
+  bridge.releaseSingleInstance = () => new Promise(() => {});
+  const startedAt = Date.now();
+  await bridge.close();
+  assert.equal(exited, 1);
+  assert.ok(Date.now() - startedAt < CLOSE_CLEANUP_TIMEOUT_MS + 500);
 });
 
 test('missing Node snapshot helper degrades safely without blocking live events', async (t) => {

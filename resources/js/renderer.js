@@ -50,8 +50,9 @@ export const ROOM_META = Object.freeze({
 // One-floor mode: everyone shares a single plate, told apart by the identity bar
 // under their feet.
 export const SINGLE_FLOOR_KEY = 'all';
-// The Owner plus one floor's worth of workers: six people and the permanent resident.
-export const SINGLE_FLOOR_CAPACITY = 7;
+// A compact work floor holds workers only. Owner permanently lives on the separate,
+// larger decision floor and is never merged into this capacity.
+export const SINGLE_FLOOR_CAPACITY = 6;
 
 const PLATE_LABELS = Object.freeze({
   all: 'AI OFFICE',
@@ -101,25 +102,15 @@ function floorStatusActivity(room, model, annexIndex = 0) {
 
 /** Everyone in the building on one floor, in a stable provider order. */
 function singleFloorOccupants(model) {
-  // The Owner is the one permanent occupant: always at the desk, because finished work
-  // is reported to them. Everyone else appears only while their session is real.
-  const occupants = [{
-    id: 'owner',
-    label: 'Owner',
-    provider: 'owner',
-    activity: (model?.owner?.inboxCount || 0) > 0 ? 'waiting_owner' : 'idle',
-    manager: true,
-    snapshot: false,
-    actionStyle: 1,
-    podIndex: 0
-  }];
+  const occupants = [];
   for (const room of TEAM_ROOMS) {
     for (const person of allOccupantsForProvider(room, model)) {
       if (person.hidden) continue;
       occupants.push({ ...person, provider: room });
     }
   }
-  // Islands fill one at a time, so the Owner and the first three arrivals share island 0.
+  // Islands fill one at a time. Owner never appears here; the independent decision room
+  // remains visible above this compact work floor.
   return occupants.slice(0, SINGLE_FLOOR_CAPACITY).map((person, order) => ({ ...person, podIndex: Math.floor(order / SEATS_PER_ISLAND) }));
 }
 
@@ -130,9 +121,9 @@ function singleFloorOccupants(model) {
  * building as small enough for the single-floor view and silently drop the rest.
  */
 export function totalOccupants(model) {
-  // The Owner always occupies a seat, so they count towards the floor's capacity.
+  // Owner has a separate permanent floor and does not consume a work-floor seat.
   return TEAM_ROOMS.reduce((sum, room) => sum
-    + sessionsForProvider(model?.providers?.[room]).reduce((people, session) => people + session.population, 0), 0) + 1;
+    + sessionsForProvider(model?.providers?.[room]).reduce((people, session) => people + session.population, 0), 0);
 }
 
 /**
@@ -167,7 +158,9 @@ function occupantsForSession(room, model, session) {
         id: agent.id,
         label: agent.role || 'subagent',
         provider: room,
-        activity: agent.activity || 'working',
+        // Pod certainty dominates child decoration. A disconnected pod cannot leave
+        // helpers walking or typing from their last pre-disconnect activity.
+        activity: pod.activity === 'unknown' ? 'unknown' : (agent.activity || 'working'),
         manager: false,
         snapshot: false,
         actionStyle: [0, 1, 3, 2, 0][index % 5]
@@ -188,9 +181,9 @@ function occupantsForSession(room, model, session) {
   } else {
     const work = (model?.providers?.[room]?.snapshotWork || []).filter((item) => item.recent)[session.index];
     if (!work) return [];
-    occupants.push({ id: work.id, label: work.label, provider: room, activity: 'working', manager: work.openChildren > 0, snapshot: true, actionStyle: work.openChildren > 0 ? 4 : 2 });
+    occupants.push({ id: work.id, label: work.label, provider: room, activity: 'snapshot', manager: work.openChildren > 0, snapshot: true, actionStyle: 0 });
     for (const [index, agent] of (work.agents || []).entries()) {
-      occupants.push({ id: `${work.id}:${agent.label}`, label: agent.label, provider: room, activity: 'working', manager: false, snapshot: true, actionStyle: [0, 1, 3, 2, 0][index % 5] });
+      occupants.push({ id: `${work.id}:${agent.label}`, label: agent.label, provider: room, activity: 'snapshot', manager: false, snapshot: true, actionStyle: 0 });
     }
   }
   return occupants
@@ -220,7 +213,7 @@ function occupantsFromModel(room, model, annexIndex = 0) {
   if (room === SINGLE_FLOOR_KEY) return singleFloorOccupants(model);
   if (room === SHARED_FLOOR_KEY) return sharedFloorOccupants(model);
   if (room === 'owner') {
-    const occupants = [{ id: 'owner', label: 'Owner', activity: 'idle', manager: true, snapshot: false, actionStyle: 1, podIndex: 0 }];
+    const occupants = [{ id: 'owner', label: 'Owner', provider: 'owner', activity: 'idle', manager: true, snapshot: false, actionStyle: 1, podIndex: 0 }];
     const visitors = Object.entries(model?.providers || {}).flatMap(([provider, team]) =>
       (team.livePods || []).filter((pod) => pod.activity === 'waiting_owner').map((pod) => ({ provider, pod }))
     );
@@ -300,6 +293,30 @@ function travelPose(seat, target, progress) {
   return { gx: seat.gx, gy: seat.gy, pose: 'stand', swing: 0, intensity: 1 - ease((progress - .84) / .16) };
 }
 
+/** The permanent Owner has quiet, non-authority idle actions from the approved design. */
+export function ownerIdleActionAt(time) {
+  return ['coffee', 'documents', 'rest'][Math.floor(Math.max(0, Number(time) || 0) / 8_000) % 3];
+}
+
+/** Signature G is a journey and a three-knock request, not a floating question mark. */
+export function ownerRequestStage(progress) {
+  const value = clamp(progress);
+  if (value < .34) return 'leave_team';
+  if (value < .58) return 'elevator';
+  if (value < .78) return 'three_knocks';
+  return 'request_queue';
+}
+
+/** Signature J must preserve worker -> lead -> lift -> Owner as distinct visual beats. */
+export function completionStage(progress) {
+  const value = clamp(progress);
+  if (value < .3) return 'worker_to_lead';
+  if (value < .48) return 'lead_accepts';
+  if (value < .72) return 'lead_to_lift';
+  if (value < .84) return 'elevator';
+  return 'owner_report';
+}
+
 function poseFor(placement, options) {
   const { time, mode, mobileRank, mobileCount, layout, room } = options;
   const person = placement.person;
@@ -307,14 +324,29 @@ function poseFor(placement, options) {
   const still = mode === 'dnd' || mode === 'important';
   const activity = person.activity;
 
-  if (activity === 'waiting_owner') {
+  if (person.provider === 'owner') {
+    const ownerAction = still ? 'documents' : ownerIdleActionAt(time);
+    return {
+      ...seat,
+      pose: ownerAction === 'documents' ? 'type' : 'sit',
+      swing: 0,
+      lean: ownerAction === 'rest' ? -.8 : ownerAction === 'coffee' ? .35 : 0,
+      facing: placement.facing,
+      alpha: 1,
+      ownerAction
+    };
+  }
+
+  // Owner receives requests while seated; the requester is the visitor who raises or
+  // knocks. The old branch made Owner raise a hand at their own desk.
+  if (activity === 'waiting_owner' && person.provider !== 'owner') {
     return { ...seat, pose: 'raise', swing: 0, facing: placement.facing, tag: true, alpha: 1 };
   }
   if (activity === 'failed') {
     const shake = still ? 0 : Math.sin(time / 90) * .5;
     return { ...seat, gx: seat.gx + shake * .04, pose: 'stand', swing: 0, facing: placement.facing, alpha: 1 };
   }
-  if (activity === 'unknown' || activity === 'cancelled') {
+  if (activity === 'unknown' || activity === 'cancelled' || activity === 'snapshot') {
     return { ...seat, pose: 'stand', swing: 0, facing: placement.facing, alpha: .75 };
   }
 
@@ -358,6 +390,107 @@ function poseFor(placement, options) {
   };
 }
 
+function drawOwnerIdleProp(ctx, x, y, theme, action) {
+  if (!action) return;
+  ctx.save();
+  ctx.strokeStyle = theme.stroke;
+  ctx.fillStyle = theme.text;
+  ctx.lineWidth = .55;
+  if (action === 'coffee') {
+    ctx.beginPath();
+    ctx.rect(x + 4.2, y - 8.2, 2.6, 2.7);
+    ctx.arc(x + 7.1, y - 6.9, 1.1, -Math.PI / 2, Math.PI / 2);
+    ctx.stroke();
+  } else if (action === 'documents') {
+    ctx.beginPath();
+    ctx.rect(x + 2.8, y - 8.6, 5.5, 3.8);
+    ctx.moveTo(x + 3.8, y - 7.4);
+    ctx.lineTo(x + 7.2, y - 7.4);
+    ctx.moveTo(x + 3.8, y - 6.3);
+    ctx.lineTo(x + 6.5, y - 6.3);
+    ctx.stroke();
+  } else {
+    ctx.font = 'bold 5px system-ui, sans-serif';
+    ctx.fillText('z', x + 5, y - 12);
+    ctx.font = 'bold 4px system-ui, sans-serif';
+    ctx.fillText('z', x + 8, y - 15);
+  }
+  ctx.restore();
+}
+
+function drawOwnerRequest(ctx, room, project, theme, cue, time) {
+  const identity = IDENTITY[cue.event.provider] || null;
+  const progress = clamp(cue.progress);
+  const stage = ownerRequestStage(progress);
+  if (room !== 'owner') {
+    const [sx, sy] = project(5.3, 6.8);
+    const [tx, ty] = project(PLATE.gridWidth - .35, 4.2);
+    const local = ease(clamp(progress / .58));
+    drawFigure(ctx, sx + (tx - sx) * local, sy + (ty - sy) * local, theme, {
+      pose: 'walk', carry: true, swing: Math.sin(time / 115) * .55,
+      facing: 1, identity, alpha: 1 - clamp((progress - .5) / .1)
+    });
+    return;
+  }
+
+  const [doorX, doorY] = project(7.4, PLATE.gridDepth - .7);
+  const [queueX, queueY] = project(7.2, 6.2);
+  // Knock at the doorway. Only after all three knocks does the requester walk from the
+  // door to a waiting chair; the former interpolation made them knock mid-corridor.
+  const queueWalk = stage === 'request_queue' ? ease(clamp((progress - .78) / .18)) : 0;
+  const x = doorX + (queueX - doorX) * queueWalk;
+  const y = doorY + (queueY - doorY) * queueWalk;
+  drawFigure(ctx, x, y, theme, {
+    pose: stage === 'request_queue' && queueWalk < 1 ? 'walk' : 'stand',
+    carry: progress < .78,
+    swing: Math.sin(time / 115) * .5,
+    facing: -1,
+    identity,
+    alpha: clamp((progress - .42) / .08)
+  });
+  if (stage === 'three_knocks') {
+    const local = clamp((progress - .58) / .2);
+    const knock = Math.min(3, Math.floor(local * 3) + 1);
+    ctx.save();
+    ctx.strokeStyle = theme.waiting;
+    ctx.lineWidth = .65;
+    for (let index = 0; index < knock; index += 1) {
+      ctx.beginPath();
+      ctx.arc(x - 3.8 - index * 1.5, y - 10 - index * .7, 1 + index * .25, -1.1, 1.1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  if (stage === 'request_queue') drawQuestionTag(ctx, x, y - 14, theme);
+}
+
+function drawAuthorityHandoff(ctx, room, project, theme, cue, time) {
+  const identity = IDENTITY[cue.event.provider] || null;
+  const progress = ease(clamp(cue.progress));
+  const [ownerX, ownerY] = project(4.9, 3.1);
+  const [recipientX, recipientY] = project(room === 'owner' ? 6.8 : 5.9, room === 'owner' ? 5.4 : 5.9);
+  const cardX = ownerX + (recipientX - ownerX) * progress;
+  const cardY = ownerY + (recipientY - ownerY) * progress - 8;
+  if (room !== 'owner') drawFigure(ctx, ownerX, ownerY, theme, { pose: 'stand', facing: 1, identity: IDENTITY.owner, alpha: 1 });
+  drawFigure(ctx, recipientX, recipientY, theme, { pose: 'stand', facing: -1, identity, alpha: 1 });
+  ctx.save();
+  ctx.strokeStyle = theme.waiting;
+  ctx.fillStyle = theme.waiting;
+  ctx.lineWidth = .8;
+  ctx.strokeRect(cardX - 4.2, cardY - 2.8, 8.4, 5.6);
+  ctx.beginPath();
+  ctx.moveTo(cardX - 2.3, cardY);
+  ctx.lineTo(cardX - .4, cardY + 1.8);
+  ctx.lineTo(cardX + 2.8, cardY - 1.7);
+  ctx.stroke();
+  if (progress > .72) {
+    ctx.font = 'bold 4.5px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('AUTH', recipientX, recipientY - 16 + Math.sin(time / 300) * .4);
+  }
+  ctx.restore();
+}
+
 /**
  * Signature J, Owner side: finished work is reported in person. The courier comes in from
  * the walkway, stands at the Owner's desk long enough to hand the delivery over, then
@@ -369,7 +502,10 @@ function drawOwnerReport(ctx, project, theme, cue, time) {
   // courier keeps to gx 6.3 and never walks through one.
   const [doorX, doorY] = project(6.3, PLATE.gridDepth - 1.2);
   const [spotX, spotY] = project(6.3, 5.2);
-  const progress = clamp(cue.progress);
+  // The Owner-side visitor only appears after the worker handed the result to the lead
+  // and the lead reached the lift. Both floors therefore show one causal chain.
+  const rawProgress = clamp(cue.progress);
+  const progress = clamp((rawProgress - .72) / .28);
   const arriving = progress < .3;
   const leaving = progress > .7;
   const walk = arriving ? ease(progress / .3) : leaving ? 1 - ease((progress - .7) / .3) : 1;
@@ -394,24 +530,39 @@ function drawOwnerReport(ctx, project, theme, cue, time) {
     lean: arriving || leaving ? 0 : .6 + Math.sin(time / 260) * .35,
     facing: leaving ? 1 : -1,
     identity,
-    alpha: leaving ? Math.max(.15, 1 - ease((progress - .82) / .18)) : 1
+    alpha: clamp((rawProgress - .7) / .06) * (leaving ? Math.max(.15, 1 - ease((progress - .82) / .18)) : 1)
   });
 }
 
 /** Signature J, team side: the worker leaves the floor for the lift, delivery in hand. */
 function drawDeliveryRun(ctx, project, theme, cue, time) {
   const identity = IDENTITY[cue.event.provider] || null;
-  const progress = ease(clamp(cue.progress / .85));
-  // Starts in the corridor between the islands and the huddle, not inside a desk.
-  const [sx, sy] = project(6.4, 7.4);
-  const [tx, ty] = project(PLATE.gridWidth - .4, 4.2);
-  drawFigure(ctx, sx + (tx - sx) * progress, sy + (ty - sy) * progress, theme, {
-    pose: 'walk',
+  const progress = clamp(cue.progress);
+  const stage = completionStage(progress);
+  const [workerX, workerY] = project(2.1, 5.1);
+  const [leadX, leadY] = project(5.3, 6.7);
+  const [liftX, liftY] = project(PLATE.gridWidth - .4, 4.2);
+  let x = workerX;
+  let y = workerY;
+  if (stage === 'worker_to_lead') {
+    const local = ease(progress / .3);
+    x += (leadX - workerX) * local;
+    y += (leadY - workerY) * local;
+  } else if (stage === 'lead_accepts') {
+    x = leadX; y = leadY;
+    drawFigure(ctx, leadX + 5, leadY - 1, theme, { pose: 'stand', facing: -1, identity, alpha: 1 });
+  } else {
+    const local = ease(clamp((progress - .48) / .24));
+    x = leadX + (liftX - leadX) * local;
+    y = leadY + (liftY - leadY) * local;
+  }
+  drawFigure(ctx, x, y, theme, {
+    pose: stage === 'lead_accepts' ? 'stand' : 'walk',
     carry: true,
     swing: Math.sin(time / 120) * .55,
     facing: 1,
     identity,
-    alpha: 1 - clamp((progress - .82) / .18) * .85
+    alpha: 1 - clamp((progress - .72) / .12)
   });
 }
 
@@ -440,7 +591,7 @@ function drawSignatureCue(ctx, room, cue, theme, project, height, time) {
     });
     badge(theme.working);
   } else if (cue.kind === 'owner_request') {
-    drawQuestionTag(ctx, center[0], center[1] - 12 + Math.sin(time / 320) * 1.2, theme);
+    drawOwnerRequest(ctx, room, project, theme, cue, time);
     badge(theme.waiting);
   } else if (cue.kind === 'revision' || cue.kind === 'approved') {
     const color = cue.kind === 'revision' ? theme.waiting : theme.working;
@@ -485,13 +636,7 @@ function drawSignatureCue(ctx, room, cue, theme, project, height, time) {
     ctx.stroke();
     badge(theme.error);
   } else if (cue.kind === 'authority') {
-    ctx.lineWidth = .7;
-    ctx.strokeStyle = theme.waiting;
-    ctx.beginPath();
-    ctx.arc(center[0] - 4 + progress * 8, center[1] - 11, 1.8, 0, Math.PI * 2);
-    ctx.moveTo(center[0] - 2.2 + progress * 8, center[1] - 11);
-    ctx.lineTo(center[0] + 3.4 + progress * 8, center[1] - 11);
-    ctx.stroke();
+    drawAuthorityHandoff(ctx, room, project, theme, cue, time);
     badge(theme.waiting);
   } else if (cue.kind === 'multi_delivery' || cue.kind === 'final_delivery') {
     // A finished task is walked over to the Owner, not floated across the plate.
@@ -525,7 +670,11 @@ function elevatorCarFor(cue, theme) {
   if (!cue) return null;
   if (!['arrival', 'owner_request', 'discussion', 'final_delivery'].includes(cue.kind)) return null;
   const up = cue.kind === 'owner_request' || cue.kind === 'final_delivery';
-  const travel = ease(clamp(cue.progress * 2));
+  const travel = cue.kind === 'owner_request'
+    ? ease(clamp((cue.progress - .34) / .24))
+    : cue.kind === 'final_delivery'
+      ? ease(clamp((cue.progress - .72) / .12))
+      : ease(clamp(cue.progress * 2));
   return {
     position: up ? 1 - travel : travel,
     occupied: true,
@@ -546,7 +695,7 @@ function drawOverflowNote(ctx, theme, room, model, annexIndex, project) {
     // got a floor. Clamp the first, or a small team cancels out the second.
     hidden = Math.max(0, session.population - FLOOR_WORKSTATIONS);
     if (annexIndex === sessions.length - 1) {
-      const all = sessionsForProvider(model?.providers?.[room]).filter((entry) => entry.team);
+      const all = sessionsForProvider(model?.providers?.[room]);
       hidden += all.slice(sessions.length).reduce((sum, entry) => sum + entry.population, 0);
     }
   }
@@ -641,7 +790,18 @@ export class RoomRenderer {
 
   draw(time = performance.now()) {
     const ctx = this.ctx;
-    const theme = this.theme;
+    const baseTheme = this.theme;
+    // Owner's permanent floor is the visual anchor. Its paper wash is deliberately
+    // opaque enough that lower floors and a busy wallpaper cannot bleed through it.
+    const theme = this.room === 'owner' && baseTheme.tone
+      ? {
+          ...baseTheme,
+          tone: {
+            ...baseTheme.tone,
+            plate: baseTheme.name === 'ink' ? 'rgb(246, 244, 238)' : 'rgb(228, 231, 236)'
+          }
+        }
+      : baseTheme;
     const mode = this.model?.effectiveMode || 'low';
     ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
     ctx.clearRect(0, 0, this.logicalWidth, this.logicalHeight);
@@ -738,6 +898,7 @@ export class RoomRenderer {
               carry: Boolean(actor.pose.carry),
               scale: figureScale
             });
+            if (person.provider === 'owner') drawOwnerIdleProp(ctx, x, y, theme, actor.pose.ownerAction);
             ctx.setLineDash([]);
             if (actor.pose.tag) drawQuestionTag(ctx, x, y - 14, theme, appear);
             if (person.aggregated) {
