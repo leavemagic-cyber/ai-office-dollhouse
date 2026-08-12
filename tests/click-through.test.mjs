@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { CHROME, clickThroughAt, scaleFromRect } from '../resources/js/click-through.js';
+import { CHROME, ClickThroughGuard, clickThroughAt, scaleFromRect } from '../resources/js/click-through.js';
 
 // A 240x300 logical overlay on a 200% display, parked near the bottom right.
 const rect = { left: 1000, top: 500, right: 1480, bottom: 1100 };
@@ -48,4 +48,41 @@ test('display scaling is measured from the window, not assumed', () => {
   assert.equal(scaleFromRect(null, 240), 1);
   assert.equal(scaleFromRect({ left: 0, right: 4_000 }, 240), 1);
   assert.equal(scaleFromRect(rect, 0), 1);
+});
+
+test('native failures never masquerade as a confirmed interactive window', async () => {
+  const results = [
+    { ok: true, clickThrough: true, ...rect },
+    null,
+    null,
+    null,
+    { ok: true, clickThrough: false, ...rect }
+  ];
+  const requests = [];
+  const guard = new ClickThroughGuard(async (next) => {
+    requests.push(next);
+    return results.shift() ?? null;
+  });
+
+  await guard.request(true);
+  assert.equal(guard.state, true);
+  await guard.request(null);
+  await guard.request(null);
+  assert.equal(guard.state, true, 'failed cleanup cannot overwrite the last OS-confirmed state');
+  assert.deepEqual(requests, [true, null, null, false]);
+
+  await guard.ensureInteractive();
+  assert.equal(guard.state, false);
+  assert.equal(guard.failures, 0);
+});
+
+test('explicit restore always asks Windows even after an earlier false result', async () => {
+  let calls = 0;
+  const guard = new ClickThroughGuard(async () => {
+    calls += 1;
+    return { ok: true, clickThrough: false, ...rect };
+  });
+  await guard.ensureInteractive();
+  await guard.ensureInteractive();
+  assert.equal(calls, 2, 'hide and minimise paths must never trust a cached false');
 });

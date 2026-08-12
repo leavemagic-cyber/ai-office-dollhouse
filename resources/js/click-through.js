@@ -47,3 +47,60 @@ export function scaleFromRect(rect, logicalWidth) {
   // Windows scaling factors live between 1 and 4; anything else means a stale rect.
   return scale >= .5 && scale <= 4 ? scale : 1;
 }
+
+/**
+ * Tracks only native-confirmed click-through state. A failed Windows call must never be
+ * recorded as interactive because that would stop later cleanup attempts while
+ * WS_EX_TRANSPARENT may still be set on the real window.
+ */
+export class ClickThroughGuard {
+  constructor(setNative, { failureLimit = 2 } = {}) {
+    this.setNative = setNative;
+    this.failureLimit = Math.max(1, Number(failureLimit) || 2);
+    this.state = null;
+    this.rect = null;
+    this.failures = 0;
+  }
+
+  async callNative(next) {
+    try {
+      return await this.setNative(next);
+    } catch {
+      return null;
+    }
+  }
+
+  record(measured) {
+    if (!measured || typeof measured.clickThrough !== 'boolean') return null;
+    this.state = measured.clickThrough;
+    this.rect = measured;
+    this.failures = 0;
+    return measured;
+  }
+
+  recordFailure() {
+    this.failures += 1;
+    this.rect = null;
+  }
+
+  async request(next) {
+    const measured = this.record(await this.callNative(next));
+    if (measured) return measured;
+    this.recordFailure();
+    // The fallback is awaited and its result is verified. Until Windows confirms false,
+    // the last confirmed state stays intact and every later poll remains able to retry.
+    if (this.failures >= this.failureLimit && next !== false) return this.ensureInteractive();
+    return null;
+  }
+
+  async ensureInteractive() {
+    const measured = this.record(await this.callNative(false));
+    if (measured) return measured;
+    this.recordFailure();
+    return null;
+  }
+
+  invalidateRect() {
+    this.rect = null;
+  }
+}

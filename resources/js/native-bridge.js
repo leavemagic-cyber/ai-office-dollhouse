@@ -317,9 +317,10 @@ export class NativeBridge {
     return this.isNative ? globalThis.Neutralino.window.getTitle() : document.title;
   }
 
-  async configureCurrentWindow({ title, width, height, x, y, alwaysOnTop = false }) {
+  async configureCurrentWindow({ title, icon = null, width, height, x, y, alwaysOnTop = false }) {
     if (!this.isNative) return;
     await globalThis.Neutralino.window.setTitle(title);
+    if (icon) await globalThis.Neutralino.window.setIcon(icon);
     await globalThis.Neutralino.window.setBorderless(true);
     await globalThis.Neutralino.window.setSize({ width, height });
     if (Number.isFinite(x) && Number.isFinite(y)) await globalThis.Neutralino.window.move(x, y);

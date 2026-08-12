@@ -27,6 +27,10 @@ assert.equal(config.modes.window.transparent, true, 'desktop overlay must remain
 assert.equal(config.modes.window.hidden, true, 'desktop overlay must start hidden until useful work exists');
 assert.equal(config.modes.window.useLogicalPixels, true, 'desktop overlay sizing must remain DPI-aware');
 assert.equal(config.modes.window.alwaysOnTop, true, 'tiny useful-work overlay must remain visible above the working app');
+assert.equal(config.applicationIcon, 'resources/icons/app-icon.png', 'Windows executable must use the project icon');
+assert.equal(config.modes.window.icon, '/resources/icons/app-icon.png', 'native window must use the project icon');
+assert.equal(existsSync(join(root, 'resources', 'icons', 'app-icon.png')), true, 'project icon PNG missing');
+assert.equal(config.version, packageJson.version, 'Neutralino and package versions must match');
 assert.ok(config.nativeAllowList.includes('os.execCommand'));
 assert.ok(config.nativeAllowList.includes('filesystem.readBinaryFile'), 'bounded event reads require binary slice access');
 assert.ok(config.nativeAllowList.includes('filesystem.remove'), 'single-instance lock requires scoped cleanup');

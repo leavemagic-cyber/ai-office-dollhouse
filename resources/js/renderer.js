@@ -138,7 +138,7 @@ export function totalOccupants(model) {
 /**
  * One session's people, in seating order: the main worker first, then its subagents, then
  * the summarised overflow. `podIndex` is the work island they belong to, so a session fills
- * one island completely before the next one opens (Codex seating spec §5).
+ * one three-seat bank completely before the next one opens.
  */
 function occupantsForSession(room, model, session) {
   const occupants = [];
@@ -268,7 +268,7 @@ function podCountFor(room, model, occupants) {
 }
 
 /**
- * Bounded travel, per SPEC 10.4: full mode moves at most two figures at once, other modes
+ * Bounded travel: full mode moves at most two figures at once, other modes
  * one, and every trip keeps the prepare/travel/perform/return/recover beats from V2 7.1.
  */
 function travelPose(seat, target, progress) {

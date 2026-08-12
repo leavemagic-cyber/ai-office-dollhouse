@@ -1,13 +1,20 @@
 # Contributing
 
-Contributions should preserve these non-negotiable boundaries:
+Contributions are welcome when they preserve the observer model and its privacy boundary.
 
-- clean-room visuals only; no copied sprites, audio, fonts, logos, screenshots, or README text;
-- no prompt, response, transcript, secret, full command line, or raw session ID persistence;
-- presence is never displayed as active work;
-- process exit is never treated as task completion;
-- no network model calls or background token use;
-- hook changes follow the Owner-selected one-click local-install policy: preserve unrelated hooks, back up the changed settings, disclose the automatic repair in the UI and documentation, and fail open;
-- resource collections remain bounded and hidden windows do no rendering.
+- Use original visuals and text, without copied sprites, audio, fonts, logos or screenshots
+- Never persist prompts, responses, transcripts, secrets, full command lines or raw session IDs
+- Do not present presence or process exit as proof of active work or completion
+- Keep model calls and background token use out of the application
+- Preserve unrelated hooks, back up changed settings and keep hook failures fail-open
+- Keep resource collections bounded and stop rendering hidden Canvas elements
 
-Run `npm test`, `npm run check`, and `npm run test:soak` before opening a pull request. Keep provider-specific event mappings supported by primary documentation and add a regression test for every truth-model change.
+Run the full validation before opening a pull request:
+
+```powershell
+npm.cmd test
+npm.cmd run check
+npm.cmd run test:soak
+```
+
+Provider event changes should cite primary documentation and include a regression test for the truth-model behavior they affect.

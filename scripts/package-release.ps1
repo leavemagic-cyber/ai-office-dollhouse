@@ -4,7 +4,11 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $releaseRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot 'release'))
-$packageName = 'AI-Office-Dollhouse-v0.2.0-win-x64'
+$packageJsonPath = Join-Path $projectRoot 'package.json'
+if (-not (Test-Path -LiteralPath $packageJsonPath)) { throw 'package.json is missing.' }
+$packageVersion = [string](([IO.File]::ReadAllText($packageJsonPath, [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json).version)
+if ($packageVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'package.json version must be a plain semantic version.' }
+$packageName = "AI-Office-Dollhouse-v$packageVersion-win-x64"
 $packageRoot = [IO.Path]::GetFullPath((Join-Path $releaseRoot $packageName))
 $zipPath = [IO.Path]::GetFullPath((Join-Path $releaseRoot "$packageName.zip"))
 $runtimeLockPath = Join-Path $projectRoot 'runtime-lock.json'
@@ -14,6 +18,16 @@ if ([int]$runtimeLock.schemaVersion -ne 1) { throw 'Unsupported pinned runtime l
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Remove-ProjectGeneratedDirectory([string]$Name) {
+    $allowed = @('.tmp', '.visual-test', 'bin', 'dist', 'release')
+    if ($Name -notin $allowed) { throw "Generated directory is not allowlisted: $Name" }
+    $target = [IO.Path]::GetFullPath((Join-Path $projectRoot $Name))
+    if (-not $target.StartsWith($projectRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Generated directory escapes the project: $target"
+    }
+    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
 }
 
 function Copy-VerifiedPortableNode([string]$DestinationDirectory, $NodeLock) {
@@ -152,6 +166,10 @@ if (-not $packageRoot.StartsWith($releaseRoot + [IO.Path]::DirectorySeparatorCha
     throw 'Refusing to package outside the project release directory.'
 }
 
+foreach ($generatedDirectory in @('.tmp', '.visual-test', 'bin', 'dist', 'release')) {
+    Remove-ProjectGeneratedDirectory $generatedDirectory
+}
+
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build-relay.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Relay build failed.' }
 & npm.cmd test
@@ -189,27 +207,15 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\uninstall-app.ps1') -Des
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Install-AI-Office-Dollhouse.cmd') -Destination (Join-Path $packageRoot 'Install-AI-Office-Dollhouse.cmd')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Uninstall-AI-Office-Dollhouse.cmd') -Destination (Join-Path $packageRoot 'Uninstall-AI-Office-Dollhouse.cmd')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination (Join-Path $packageRoot 'README.md')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'CHANGELOG.md') -Destination (Join-Path $packageRoot 'CHANGELOG.md')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $packageRoot 'LICENSE')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination (Join-Path $packageRoot 'THIRD_PARTY_NOTICES.md')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'SECURITY.md') -Destination (Join-Path $packageRoot 'SECURITY.md')
-Copy-Item -LiteralPath (Join-Path $projectRoot 'AI_OFFICE_DOLLHOUSE_DESIGN_SPEC.md') -Destination (Join-Path $packageRoot 'AI_OFFICE_DOLLHOUSE_DESIGN_SPEC.md')
-Copy-Item -LiteralPath (Join-Path $projectRoot 'AI_OFFICE_DOLLHOUSE_V2_OWNER_GOAL_PLAN.md') -Destination (Join-Path $packageRoot 'AI_OFFICE_DOLLHOUSE_V2_OWNER_GOAL_PLAN.md')
-Copy-Item -LiteralPath (Join-Path $projectRoot 'DETECTION_AND_DISPLAY_EVIDENCE_20260809.md') -Destination (Join-Path $packageRoot 'DETECTION_AND_DISPLAY_EVIDENCE_20260809.md')
-Copy-Item -LiteralPath (Join-Path $projectRoot 'GROK_V06_DISPLAY_REVIEW_20260809.md') -Destination (Join-Path $packageRoot 'GROK_V06_DISPLAY_REVIEW_20260809.md')
-foreach ($reviewName in @(
-    'GROK_STAGE1_COMPACT_TOWER_REVIEW_20260809.md',
-    'GROK_STAGE2_2_5D_REVIEW_20260809.md',
-    'GROK_STAGE3_MULTI_TASK_CHOREOGRAPHY_REVIEW_20260809.md',
-    'GROK_STAGE4_RESOURCE_INSTALL_REVIEW_20260809.md',
-    'GROK_STAGE5_OWNER_VISUAL_CORRECTION_REVIEW_20260809.md',
-    'GROK_STAGE5_PER_FLOOR_VISUAL_IP_REVIEW_20260809.md'
-)) {
-    Copy-Item -LiteralPath (Join-Path $projectRoot $reviewName) -Destination (Join-Path $packageRoot $reviewName)
-}
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\ARCHITECTURE.md') -Destination (Join-Path $packageRoot 'docs\ARCHITECTURE.md')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\TESTING.md') -Destination (Join-Path $packageRoot 'docs\TESTING.md')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\PRIVACY.md') -Destination (Join-Path $packageRoot 'docs\PRIVACY.md')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\INTEGRATIONS.md') -Destination (Join-Path $packageRoot 'docs\INTEGRATIONS.md')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\RELEASE_CHECKLIST.md') -Destination (Join-Path $packageRoot 'docs\RELEASE_CHECKLIST.md')
 $portableNode = Copy-VerifiedPortableNode (Join-Path $packageRoot 'runtime') $runtimeLock.portableNode
 
 $hashRows = Get-ChildItem -LiteralPath $packageRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
