@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.4 - 2026-08-13
+
+- Prevent external readers from ever observing a partial shared-model JSON file by publishing only after the prior destination has been removed.
+
+## 0.3.3 - 2026-08-13
+
+- 依四方設計討論收斂動作語意：一般執行固定在自己的桌前工作；回合完成後才依全域節拍播放發呆、喝水、看文件與有植物時澆花；A–J 結構事件動畫全部保留
+- 修正近期快照冒充 live 人偶、交卷回桌搶位、道具鏡射、Important／DND 中途續播，以及 Owner 桌椅／螢幕對位
+- 新增 512 KiB `live-events.ndjson` 即時 inbox；完整事件 ledger 繼續獨立保留，長任務跨重啟也能即時重建 running 並在 stop 後退場
+- 修正 Grok SessionStart 逾時與 session end 重複 completion；官方五秒 timeout、`end_turn` only 與 terminal 防線已由真實 Grok 任務驗證
+- 共享模型改用原生 `.next` 完整寫入後替換；真實 Claude 任務、413 次高頻讀取與 113 項測試均無半份 JSON
+- 取消 SHA／雜湊值作為封裝核准門檻；雜湊清單與 ZIP SHA 僅保留為資訊性產物
+
 ## 0.3.2 - 2026-08-13
 
 - 修正 Tier-D presence 去重造成的過期狀態，快照不再冒充執行中；轉接器斷線時主工作與 subagent 一律以最長十分鐘的 unknown 狀態凍結，過期重播不再永久堆積樓層

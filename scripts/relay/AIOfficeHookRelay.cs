@@ -177,7 +177,7 @@ internal static class AIOfficeHookRelay
         return string.Empty;
     }
 
-    private static string MapEvent(string hook, Dictionary<string, object> payload)
+    private static string MapEvent(string provider, string hook, Dictionary<string, object> payload)
     {
         switch (hook)
         {
@@ -186,8 +186,10 @@ internal static class AIOfficeHookRelay
             case "beforeagent": return "turn_started";
             case "stop":
                 bool taskCompleted;
-                return TryBooleanValue(payload, out taskCompleted, "task_completed", "taskCompleted") && taskCompleted
-                    ? "task_completed" : "turn_completed";
+                if (TryBooleanValue(payload, out taskCompleted, "task_completed", "taskCompleted") && taskCompleted)
+                    return "task_completed";
+                string stopReason = NormalizeHook(TextValue(payload, "reason", "stop_reason", "stopReason"));
+                return provider != "grok" || stopReason == "endturn" ? "turn_completed" : string.Empty;
             case "afteragent": return "turn_completed";
             case "sessionend": return "session_stopped";
             case "subagentstart": return "agent_spawned";
@@ -231,7 +233,11 @@ internal static class AIOfficeHookRelay
     {
         if (provider == "claude" && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GROK_HOOK_EVENT"))) return;
         string raw;
-        using (StreamReader reader = new StreamReader(Console.OpenStandardInput(), Encoding.UTF8, true, 4096, false)) raw = reader.ReadToEnd();
+        // Grok writes one compact JSON record plus a newline, then keeps the child's
+        // stdin pipe open while waiting for the hook to exit. ReadToEnd therefore
+        // deadlocked until Grok's timeout killed the relay. Every supported provider's
+        // hook payload is one JSON record, so a line read works with both newline and EOF.
+        using (StreamReader reader = new StreamReader(Console.OpenStandardInput(), Encoding.UTF8, true, 4096, false)) raw = reader.ReadLine();
         if (string.IsNullOrWhiteSpace(raw) || raw.Length > MaxInputChars) return;
 
         JavaScriptSerializer serializer = new JavaScriptSerializer();
@@ -242,7 +248,7 @@ internal static class AIOfficeHookRelay
         string hookRaw = TextValue(payload, "hook_event_name", "hookEventName");
         if (string.IsNullOrWhiteSpace(hookRaw)) hookRaw = Environment.GetEnvironmentVariable("GROK_HOOK_EVENT") ?? string.Empty;
         string hook = NormalizeHook(hookRaw);
-        string eventType = MapEvent(hook, payload);
+        string eventType = MapEvent(provider, hook, payload);
         string rawSession = TextValue(payload, "session_id", "sessionId");
         if (string.IsNullOrWhiteSpace(eventType) || string.IsNullOrWhiteSpace(rawSession)) return;
 
@@ -294,14 +300,24 @@ internal static class AIOfficeHookRelay
             if (File.Exists(archivePath)) File.Delete(archivePath);
             File.Move(eventPath, archivePath);
         }
-        AppendWithRetry(eventPath, serializer.Serialize(officeEvent));
+        string serialized = serializer.Serialize(officeEvent);
+        AppendWithRetry(eventPath, serialized);
+        // A bounded live inbox keeps desktop polling independent from the full audit
+        // ledger. Preserve one prior segment so a session start survives rotation.
+        string livePath = Path.Combine(dataDirectory, "live-events.ndjson");
+        if (File.Exists(livePath) && new FileInfo(livePath).Length > 524288)
+        {
+            string liveArchive = Path.Combine(dataDirectory, "live-events.1.ndjson");
+            if (File.Exists(liveArchive)) File.Delete(liveArchive);
+            File.Move(livePath, liveArchive);
+        }
+        AppendWithRetry(livePath, serialized);
     }
 
     public static int Main(string[] args)
     {
         try
         {
-            try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
             string provider = args.Length > 0 ? args[0].ToLowerInvariant() : string.Empty;
             string surface = args.Length > 1 ? args[1].ToLowerInvariant() : "auto";
             if (provider == "codex" || provider == "claude" || provider == "gemini" || provider == "grok") Run(provider, surface);

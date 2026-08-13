@@ -249,6 +249,10 @@ function ensurePod(state, event) {
       completedAt: null,
       pinned: false,
       lastImportantEvent: null,
+      idleFrom: 'derived',
+      idleSinceAt: event.timestamp,
+      deliveredCount: 0,
+      deliveredAt: null,
       actingLeadAgentId: null,
       discussionId: null,
       delegatedAuthority: null,
@@ -463,12 +467,21 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
       compactOfficeState(state, now);
       return { applied: false, reason: 'session_id_missing', event };
     }
+    if (pod.lifecycle === 'completed'
+      && !['session_started', 'session_observed', 'session_title'].includes(event.eventType)) {
+      state.metrics.rejected += 1;
+      addDiagnostic(state, 'info', 'terminal_session_event', `Ignored ${event.eventType} after session stop`, event.timestamp);
+      compactOfficeState(state, now);
+      return { applied: false, reason: 'terminal_session_event', event };
+    }
     const main = mainAgent(pod);
     switch (event.eventType) {
       case 'session_started':
       case 'session_observed':
         pod.lifecycle = 'active';
         setPodActivity(pod, 'idle');
+        pod.idleFrom = 'derived';
+        pod.idleSinceAt = event.timestamp;
         break;
       case 'session_title':
         pod.label = event.taskLabel;
@@ -476,10 +489,14 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
       case 'turn_started':
         pod.lifecycle = 'active';
         setPodActivity(pod, 'running');
+        pod.idleFrom = null;
+        pod.idleSinceAt = null;
         if (main) main.activity = 'working';
         break;
       case 'turn_completed':
         setPodActivity(pod, 'idle');
+        pod.idleFrom = 'turn_completed';
+        pod.idleSinceAt = event.timestamp;
         if (main) main.activity = 'delivered';
         break;
       case 'owner_input_required':
@@ -488,9 +505,13 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
         break;
       case 'owner_input_received':
         setPodActivity(pod, 'running', { resolvesOwnerRequest: true });
+        pod.idleFrom = null;
+        pod.idleSinceAt = null;
         break;
       case 'tool_started':
         setPodActivity(pod, 'running');
+        pod.idleFrom = null;
+        pod.idleSinceAt = null;
         if (main) {
           main.activity = 'working';
           main.role = event.toolName ? safeLabel(event.toolName, main.role, 22) : main.role;
@@ -502,6 +523,10 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
       case 'task_completed':
         setPodActivity(pod, 'idle', { resolvesOwnerRequest: true });
         pod.lastImportantEvent = 'task_completed';
+        pod.idleFrom = 'derived';
+        pod.idleSinceAt = event.timestamp;
+        pod.deliveredCount = Math.min(Number.MAX_SAFE_INTEGER, (pod.deliveredCount || 0) + 1);
+        pod.deliveredAt = event.timestamp;
         if (main) main.activity = 'delivered';
         break;
       case 'session_stopped':
@@ -623,7 +648,7 @@ export function compactOfficeState(state, now = Date.now(), options = {}) {
   }
 }
 
-export function degradeStaleSessions(state, now = Date.now(), staleAfter = 5 * 60_000) {
+export function degradeStaleSessions(state, now = Date.now(), staleAfter = 10 * 60_000) {
   Object.values(state.teams).forEach((team) => {
     Object.values(team.pods).forEach((pod) => {
       if (pod.lifecycle !== 'active') return;

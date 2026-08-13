@@ -24,3 +24,11 @@ test('window controls stay above every resize grip', () => {
   assert.match(closeHandler, /addEventListener\('pointerdown', requestClose\)/);
   assert.doesNotMatch(closeHandler, /restoreClickThroughForChrome/);
 });
+
+test('startup publishes live events before optional external probes', () => {
+  const startup = main.slice(main.indexOf('// Live hook events are the truth layer'), main.indexOf('setInterval(() => {', main.indexOf('// Live hook events are the truth layer')));
+  assert.ok(startup.indexOf('await inbox.poll()') < startup.indexOf('await broadcastModel()'));
+  assert.ok(startup.indexOf('await broadcastModel()') < startup.indexOf('discovery.start()'));
+  assert.ok(startup.indexOf('await broadcastModel()') < startup.indexOf('refreshExistingSnapshot()'));
+  assert.ok(startup.indexOf('await broadcastModel()') < startup.indexOf('ensureIntegrationCoverage()'));
+});

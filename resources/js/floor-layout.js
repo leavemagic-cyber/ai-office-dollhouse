@@ -4,6 +4,9 @@ export const PEOPLE_PER_ANNEX = 14;
 // Owner, 2026-08-12: one floor shows at most six people. Above that the figures would
 // have to be shrunk to fit, and a shrunken figure is a worse answer than an honest "+N".
 export const FLOOR_WORKSTATIONS = 6;
+// Recent work history is context, never competition for the live office. When no
+// lifecycle-backed work exists, keep only a small newest-first static digest visible.
+export const MAX_VISIBLE_SNAPSHOT_FLOORS = 2;
 // Retained only as a neutral destination for a short cue whose session can no longer be
 // matched. Live work never mixes providers on this floor.
 export const SHARED_FLOOR_KEY = 'shared';
@@ -47,6 +50,7 @@ export function sessionsForProvider(providerState) {
       index,
       source: 'live',
       activity: pod.activity,
+      updatedAt: Number(pod.lastActivityAt) || 0,
       population: sessionPopulation(pod),
       team: sessionHasSubagents(pod)
     }));
@@ -58,6 +62,7 @@ export function sessionsForProvider(providerState) {
     source: 'snapshot',
     // A snapshot proves that a work record exists, not that it is executing now.
     activity: 'snapshot',
+    updatedAt: Number(work.updatedAt) || 0,
     // Snapshot work lists helpers only, so the main worker is added on top.
     population: Math.max(1, 1 + (work.agents || []).length),
     team: (work.agents || []).length > 0 || Number(work.openChildren) > 0
@@ -110,12 +115,18 @@ export function floorPopulationForDisplay(model, room, annexIndex = 0) {
   if (!PROVIDER_ROOMS.includes(room)) return 0;
   // One provider floor is one subagent team, so its population is that session's own.
   const session = teamSessions(model, room)[annexIndex];
-  return session ? Math.min(FLOOR_WORKSTATIONS, session.population) : 0;
+  // A recent snapshot may keep a truthful static work card visible, but it never creates
+  // a person. Only lifecycle-backed live sessions contribute office population.
+  return session?.source === 'live' ? Math.min(FLOOR_WORKSTATIONS, session.population) : 0;
 }
 
 export function floorHasUsefulWork(spec, model) {
   if (!spec) return false;
   if (floorPopulationForDisplay(model, spec.room, spec.annexIndex) > 0) return true;
+  if (PROVIDER_ROOMS.includes(spec.room)) {
+    const session = teamSessions(model, spec.room)[spec.annexIndex];
+    if (session?.source === 'snapshot') return true;
+  }
   if (spec.room === SHARED_FLOOR_KEY) {
     // Shared live work is forbidden. An unmatched transient cue is skipped instead of
     // opening an empty cross-provider shell that looks like a workplace.
@@ -134,6 +145,8 @@ export function floorSpecsForModel(model, roomMeta, options = {}) {
   // The Owner decision room is an independent, permanent top floor. activeOnly only
   // applies to work floors and must never hide or merge this room.
   specs.push(ownerSpec);
+  const liveSpecs = [];
+  const snapshotSpecs = [];
   for (const room of PROVIDER_ROOMS) {
     const sessions = teamSessions(model, room);
     const allSessions = sessionsForProvider(model?.providers?.[room]).length;
@@ -148,12 +161,22 @@ export function floorSpecsForModel(model, roomMeta, options = {}) {
         annexCount: sessions.length,
         sessionId: session.id,
         sessionLabel: label,
+        evidenceSource: session.source,
+        updatedAt: Number(session.updatedAt) || 0,
         overflowSummary: annexIndex === sessions.length - 1 && allSessions > sessions.length,
         title: label ? `${titleFor(roomMeta, room)}・${label}` : titleFor(roomMeta, room)
       };
-      if (!activeOnly || floorHasUsefulWork(spec, model)) specs.push(spec);
+      if (!activeOnly || floorHasUsefulWork(spec, model)) {
+        (session.source === 'live' ? liveSpecs : snapshotSpecs).push(spec);
+      }
     }
   }
+  // A real task must never be pushed below historical cards. While any Tier-A session
+  // is live, history disappears from the active overlay. With no live work, a bounded
+  // newest-first snapshot digest remains available without pretending to be staffed.
+  snapshotSpecs.sort((left, right) => right.updatedAt - left.updatedAt || left.key.localeCompare(right.key));
+  specs.push(...liveSpecs);
+  if (!liveSpecs.length) specs.push(...snapshotSpecs.slice(0, MAX_VISIBLE_SNAPSHOT_FLOORS));
   const lobbySpec = { key: 'lobby', room: 'lobby', annexIndex: 0, annexCount: 1, title: titleFor(roomMeta, 'lobby') };
   if (!activeOnly || floorHasUsefulWork(lobbySpec, model)) specs.push(lobbySpec);
   return specs;

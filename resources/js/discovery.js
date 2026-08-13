@@ -25,6 +25,7 @@ const DEFAULT_EVENT_READ_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_EVENT_TAIL_BYTES = 64 * 1024;
 const DEFAULT_EVENT_LINE_BYTES = 64 * 1024;
 const EVENT_IDENTITY_PROBE_BYTES = 512;
+const LIVE_TAIL_READ_TIMEOUT_MS = 1_500;
 const textEncoder = typeof TextEncoder === 'undefined' ? null : new TextEncoder();
 const hasTextDecoder = typeof TextDecoder !== 'undefined';
 
@@ -65,7 +66,10 @@ function fingerprintByteCount(fingerprint) {
 }
 
 function createdAtFor(stats) {
-  const createdAt = Number(stats?.createdAt);
+  // Neutralino exposes a few timestamps with sub-millisecond floating noise. Comparing
+  // those raw values makes an ordinary append look like a brand-new file on every poll,
+  // so the reader keeps replaying the first 64 KiB and never reaches current events.
+  const createdAt = Math.round(Number(stats?.createdAt));
   return Number.isFinite(createdAt) && createdAt >= 0 ? createdAt : null;
 }
 
@@ -156,7 +160,8 @@ export class EventInboxReader {
     maxFileBytes = DEFAULT_MAX_EVENT_FILE_BYTES,
     readChunkBytes = DEFAULT_EVENT_READ_CHUNK_BYTES,
     tailBytes = DEFAULT_EVENT_TAIL_BYTES,
-    maxLineBytes = DEFAULT_EVENT_LINE_BYTES
+    maxLineBytes = DEFAULT_EVENT_LINE_BYTES,
+    tailSnapshot = false
   }) {
     this.bridge = bridge;
     this.onEvent = onEvent;
@@ -175,6 +180,56 @@ export class EventInboxReader {
     this.timer = null;
     this.fileStates = new Map();
     this.reading = false;
+    this.tailSnapshot = Boolean(tailSnapshot);
+    this.tailEventIds = new Set();
+  }
+
+  async readLiveTail(path) {
+    if (!path) return 0;
+    let stats;
+    try { stats = await this.bridge.getFileStats(path); } catch { return 0; }
+    const size = Number(stats?.size);
+    if (!Number.isSafeInteger(size) || size <= 0) return 0;
+    let content;
+    try {
+      content = await Promise.race([
+        // Neutralino's Windows partial-read promise can stall. A normal full text read
+        // of this rotation-bounded file is reliable; slice its live tail in JS.
+        this.bridge.readFile(path),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('event tail read timeout')), LIVE_TAIL_READ_TIMEOUT_MS))
+      ]);
+    } catch {
+      this.reportIssue(path, 'event_file_read_failed');
+      return 0;
+    }
+    const wholeText = String(content || '');
+    const clipped = utf8ByteLength(wholeText) > this.tailBytes;
+    let text = clipped ? wholeText.slice(-this.tailBytes) : wholeText;
+    if (clipped) {
+      const firstNewline = text.indexOf('\n');
+      if (firstNewline < 0) return 0;
+      text = text.slice(firstNewline + 1);
+    }
+    // A hook append is one line. Ignore a trailing in-progress line; the next tail poll
+    // will see it complete. This avoids persistent byte cursors and the native binary
+    // read promise that can stall indefinitely on Windows.
+    const lines = text.split('\n');
+    if (text && !text.endsWith('\n')) lines.pop();
+    let applied = 0;
+    for (const rawLine of lines) {
+      const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+      if (!line || utf8ByteLength(line) > this.maxLineBytes) continue;
+      try {
+        const event = JSON.parse(line);
+        const eventId = String(event?.eventId || '');
+        if (!eventId || this.tailEventIds.has(eventId)) continue;
+        this.tailEventIds.add(eventId);
+        if (this.tailEventIds.size > 4_096) this.tailEventIds.delete(this.tailEventIds.values().next().value);
+        this.onEvent(event);
+        applied += 1;
+      } catch { /* malformed or partially written rows are retried on the next poll */ }
+    }
+    return applied;
   }
 
   reportIssue(path, code, details = {}) {
@@ -184,8 +239,11 @@ export class EventInboxReader {
   async readSegment(path, pos, size, state) {
     const options = { pos, size };
     const filesystem = globalThis.Neutralino?.filesystem;
-    if (state.decoder && typeof filesystem?.readBinaryFile === 'function') {
-      const binary = await filesystem.readBinaryFile(path, options);
+    const binaryReader = typeof filesystem?.readBinaryFile === 'function'
+      ? filesystem.readBinaryFile.bind(filesystem)
+      : typeof this.bridge.readBinaryFile === 'function' ? this.bridge.readBinaryFile.bind(this.bridge) : null;
+    if (state.decoder && binaryReader) {
+      const binary = await binaryReader(path, options);
       const bytes = binary instanceof ArrayBuffer
         ? new Uint8Array(binary)
         : ArrayBuffer.isView(binary) ? new Uint8Array(binary.buffer, binary.byteOffset, binary.byteLength) : new Uint8Array();
@@ -195,13 +253,15 @@ export class EventInboxReader {
         tailFingerprint: fingerprintBytes(bytes.subarray(Math.max(0, bytes.byteLength - EVENT_IDENTITY_PROBE_BYTES)))
       };
     }
-    if (typeof filesystem?.readFile === 'function') {
-      const content = await filesystem.readFile(path, options);
-      const text = String(content || '');
+    if (textEncoder && state.decoder) {
+      const content = typeof filesystem?.readFile === 'function'
+        ? await filesystem.readFile(path)
+        : await this.bridge.readFile(path);
+      const bytes = textEncoder.encode(String(content || '')).subarray(pos, pos + size);
       return {
-        content: text,
-        bytesRead: utf8ByteLength(text),
-        tailFingerprint: fingerprintText(text.slice(-EVENT_IDENTITY_PROBE_BYTES))
+        content: state.decoder.decode(bytes, { stream: true }),
+        bytesRead: bytes.byteLength,
+        tailFingerprint: fingerprintBytes(bytes.subarray(Math.max(0, bytes.byteLength - EVENT_IDENTITY_PROBE_BYTES)))
       };
     }
     const content = await this.bridge.readFile(path, options);
@@ -215,8 +275,11 @@ export class EventInboxReader {
 
   async readIdentityFingerprint(path, pos, size) {
     const filesystem = globalThis.Neutralino?.filesystem;
-    if (typeof filesystem?.readBinaryFile === 'function') {
-      const binary = await filesystem.readBinaryFile(path, { pos, size });
+    const binaryReader = typeof filesystem?.readBinaryFile === 'function'
+      ? filesystem.readBinaryFile.bind(filesystem)
+      : typeof this.bridge.readBinaryFile === 'function' ? this.bridge.readBinaryFile.bind(this.bridge) : null;
+    if (binaryReader) {
+      const binary = await binaryReader(path, { pos, size });
       const bytes = binary instanceof ArrayBuffer
         ? new Uint8Array(binary)
         : ArrayBuffer.isView(binary) ? new Uint8Array(binary.buffer, binary.byteOffset, binary.byteLength) : new Uint8Array();
@@ -294,14 +357,27 @@ export class EventInboxReader {
     }
 
     const createdAt = createdAtFor(stats);
-    let state = this.fileStates.get(path) || emptyFileState(createdAt);
-    let wasReplaced = size < state.size
-      || size < state.cursor
-      || (createdAt !== null && state.createdAt !== null && createdAt !== state.createdAt);
+    const knownState = this.fileStates.get(path);
+    let state = knownState || emptyFileState(createdAt);
+    // Startup is about current work, not replaying hundreds of kilobytes of already
+    // finished sessions. Begin at a bounded tail and discard its partial first line;
+    // small files are still read in full. This also makes a newly started real task
+    // visible on the first poll instead of after an old-log catch-up.
+    if (!knownState && size > this.tailBytes) {
+      state.cursor = size - this.tailBytes;
+      state.size = size;
+      state.discardLeadingPartial = true;
+      if (size > this.maxFileBytes) {
+        this.reportIssue(path, 'event_file_oversize', { skippedBytes: state.cursor });
+      }
+    }
+    let wasReplaced = size < state.size || size < state.cursor;
+    const metadataChanged = createdAt !== null && state.createdAt !== null && createdAt !== state.createdAt;
     // A writer can replace an archive with a larger file at the same path. If
     // creation metadata is unavailable or unchanged, compare a bounded hash
     // of the old end-of-file before treating growth as a normal append.
-    if (!wasReplaced && size > state.size && state.cursor >= state.size && state.tailFingerprint) {
+    if (!wasReplaced && (size > state.size || metadataChanged)
+      && state.size > 0 && state.cursor >= state.size && state.tailFingerprint) {
       // The final read can be shorter than the standard 512-byte probe. Keep
       // the probe length aligned with the stored fingerprint so ordinary
       // multi-chunk appends never look like a replacement.
@@ -309,6 +385,9 @@ export class EventInboxReader {
       if (probeSize > 0) {
         try {
           const fingerprint = await this.readIdentityFingerprint(path, state.size - probeSize, probeSize);
+          // Some Neutralino/Windows builds report a write-changing timestamp in the
+          // `createdAt` slot. A timestamp change by itself therefore proves nothing:
+          // reset only when the bytes at the previous end also changed.
           wasReplaced = fingerprint !== state.tailFingerprint;
         } catch {
           // The later incremental read remains safe; retry identity probing on
@@ -369,6 +448,13 @@ export class EventInboxReader {
     if (this.reading || !this.bridge.isNative) return 0;
     this.reading = true;
     try {
+      if (this.tailSnapshot) {
+        const archived = await this.readLiveTail(this.bridge.eventFile('live-events.1.ndjson'));
+        const current = await this.readLiveTail(this.bridge.eventFile('live-events.ndjson'));
+        const total = archived + current;
+        if (total) this.onStatus?.({ ok: true, applied: total, at: Date.now() });
+        return total;
+      }
       const archived = await this.readPath(this.bridge.eventFile('events.1.ndjson'));
       const current = await this.readPath(this.bridge.eventFile('events.ndjson'));
       const total = archived + current;

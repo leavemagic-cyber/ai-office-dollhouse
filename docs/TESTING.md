@@ -5,7 +5,7 @@
 - `npm.cmd test` 驗證事件真實性、樓層語意、座位幾何、人偶姿勢、滑鼠穿透、hook 安裝、隱私與生命週期清理
 - `npm.cmd run check` 驗證 JavaScript 語法、Neutralino 安全設定、Windows 圖示、PowerShell 5.1 相容性與發行包腳本完整性
 - `npm.cmd run test:soak` 執行 12,000 個事件與 8 小時虛擬時間，確認集合維持有界並能釋放
-- `npm.cmd run package:win` 會重跑測試、檢查、soak、runtime 鎖定與 ZIP manifest 驗證
+- `npm.cmd run package:win` 會重跑測試、檢查、soak、固定版本 runtime 準備與 ZIP 必要檔案驗證；雜湊清單只作資訊輸出
 
 ## 發行基準
 

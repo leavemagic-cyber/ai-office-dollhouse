@@ -268,17 +268,20 @@ export function officeLayout(room, podCount = 1) {
   if (room === 'owner') {
     items.push({ kind: 'board', gx: 6.2, gy: .6, w: 2.6, h: 1.5 });
     items.push({ kind: 'cabinet', gx: 1.0, gy: 1.0, w: 1.1, d: 1.5, h: 1.5, shelves: 3 });
-    items.push({ kind: 'desk', gx: 4.6, gy: 2.6, w: 3.2, d: 1.6, tray: true });
-    items.push({ kind: 'chair', gx: 4.6, gy: 1.4, back: true });
+    items.push({ kind: 'desk', gx: 4.6, gy: 2.6, w: 3.2, d: 1.6, tray: true, monitors: 1 });
+    // The permanent Owner works at the near edge of this desk. The chair shares the exact
+    // seat coordinate, so the seated figure replaces it instead of leaving a second chair
+    // behind the desk that reads as an unexplained extra occupant.
+    items.push({ kind: 'chair', gx: 4.6, gy: 4.0, back: true, facing: -1 });
     items.push({ kind: 'plant', gx: 9.0, gy: 5.0 });
     items.push({ kind: 'chair', gx: 7.0, gy: 7.0 });
     items.push({ kind: 'chair', gx: 8.8, gy: 7.6 });
-    seats.push({ gx: 4, gy: 4, pod: 0, facing: 1, role: 'owner' });
+    seats.push({ gx: 4.6, gy: 4.0, pod: 0, facing: -1, role: 'owner', desk: true });
     seats.push({ gx: 8, gy: 4, pod: 0, facing: -1, role: 'queue' });
     seats.push({ gx: 6, gy: 8, pod: 0, facing: -1, role: 'queue' });
     seats.push({ gx: 8, gy: 6, pod: 0, facing: -1, role: 'queue' });
     seats.push({ gx: 2, gy: 4, pod: 0, facing: 1 });
-    return { items, seats, manager: { gx: 4, gy: 4 }, walkway: { gx: 8, gy: 8 } };
+    return { items, seats, manager: { gx: 4.6, gy: 4.0 }, walkway: { gx: 8, gy: 8 } };
   }
 
   if (room === 'lobby') {
@@ -598,7 +601,7 @@ export function drawOfficeItem(ctx, project, theme, item, progress = 1) {
       strokeLine(ctx, project(item.gx - item.w / 2, item.gy, DESK_HEIGHT), project(item.gx + item.w / 2, item.gy, DESK_HEIGHT), { width: .45, alpha: .8, progress: spine });
       for (let index = 0; index < (item.monitors || 0); index += 1) {
         const offset = (item.monitors || 1) === 1 ? 0 : -.5 + index;
-        drawMonitor(ctx, project, item.gx + offset, item.gy + ((item.monitors || 1) === 1 ? 0 : index ? .3 : -.3), spine);
+        drawMonitor(ctx, project, item.gx + offset, item.gy + ((item.monitors || 1) === 1 ? 0 : index ? .3 : -.3), spine, item.monitorSignal || 0);
       }
       for (let index = 0; index < (item.papers || 0); index += 1) {
         drawPaper(ctx, project, item.gx - .45 + index * .9, item.gy + (index ? .25 : -.25), spine);
@@ -659,7 +662,7 @@ export function drawOfficeItem(ctx, project, theme, item, progress = 1) {
       // floor looked like a room full of empty tables.
       for (let index = 0; index < (item.monitors || 0); index += 1) {
         const spread = (item.monitors || 1) === 1 ? 0 : -.45 + index * .9;
-        drawMonitor(ctx, project, item.gx + spread, item.gy - halfDepth + .12, extras);
+        drawMonitor(ctx, project, item.gx + spread, item.gy - halfDepth + .12, extras, item.monitorSignal || 0);
       }
       if (item.tray) drawPaper(ctx, project, item.gx + halfWidth - .6, item.gy - .3, extras, true);
       if (item.manager) drawPaper(ctx, project, item.gx - .4, item.gy - .2, extras);
@@ -968,7 +971,7 @@ export function drawOfficeItem(ctx, project, theme, item, progress = 1) {
   }
 }
 
-function drawMonitor(ctx, project, gx, gy, progress) {
+function drawMonitor(ctx, project, gx, gy, progress, signal = 0) {
   if (progress <= 0) return;
   const footTop = DESK_HEIGHT + .04;
   const bottom = DESK_HEIGHT + .34;
@@ -984,6 +987,14 @@ function drawMonitor(ctx, project, gx, gy, progress) {
   const stand = clamp((progress - .5) / .5);
   strokeLine(ctx, project(gx, gy, bottom), project(gx, gy, footTop), { width: .45, progress: stand });
   strokeLine(ctx, project(gx - .28, gy, footTop), project(gx + .28, gy, footTop), { width: .42, progress: stand });
+  if (signal > 0) {
+    const level = bottom + .22 + clamp(signal) * .38;
+    strokeLine(ctx, project(gx - .28, gy, level), project(gx + .18, gy, level), {
+      width: .38,
+      alpha: .45 + clamp(signal) * .45,
+      progress: clamp((progress - .55) / .45)
+    });
+  }
 }
 
 function drawPaper(ctx, project, gx, gy, progress, tray = false) {
@@ -1066,7 +1077,7 @@ export function drawFigure(ctx, x, baseline, theme, options = {}) {
     scale = 1
   } = options;
   if (alpha <= 0) return;
-  const sit = pose === 'sit' || pose === 'type';
+  const sit = pose === 'sit' || pose === 'type' || pose === 'drink';
   const walk = pose === 'walk';
   // The renderer sends +-.55 for a walk cycle; map that onto the stride angle.
   const stride = walk ? clamp(swing / .55, -1, 1) * FIGURE.strideDegrees : 0;
@@ -1127,6 +1138,10 @@ export function drawFigure(ctx, x, baseline, theme, options = {}) {
       reach(far, tipY, -1.5, -5.6, FIGURE.upperArm, FIGURE.foreArm, 1),
       [[near, tipY], elbow, [elbow[0] - .12, elbow[1] - FIGURE.foreArm - .2]]
     ];
+  } else if (pose === 'drink') {
+    // A cup is drawn by the renderer at the hand. The raised near arm supplies a distinct
+    // silhouette while the far arm stays hidden by the same three-quarter seated rule.
+    arms = [null, reach(near, tipY, 4.25, neckY - 1.4, FIGURE.upperArm, FIGURE.foreArm, 1)];
   } else if (sit) {
     // Seated is drawn three-quarter, so the far arm is behind the torso and simply not
     // drawn. Every version that did draw it either crossed the spine into a closed

@@ -30,12 +30,10 @@ function Remove-ProjectGeneratedDirectory([string]$Name) {
     if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
 }
 
-function Copy-VerifiedPortableNode([string]$DestinationDirectory, $NodeLock) {
+function Copy-PortableNode([string]$DestinationDirectory, $NodeLock) {
     $nodeUri = [Uri][string]$NodeLock.url
-    $expectedHash = [string]$NodeLock.sha256
     $expectedBytes = [int64]$NodeLock.bytes
     $licenseUri = [Uri][string]$NodeLock.license.url
-    $expectedLicenseHash = [string]$NodeLock.license.sha256
     $expectedLicenseBytes = [int64]$NodeLock.license.bytes
     if ($nodeUri.Scheme -ne 'https' -or $nodeUri.Host -ne 'nodejs.org') {
         throw 'Portable Node runtime must use the official Node.js HTTPS host.'
@@ -43,8 +41,7 @@ function Copy-VerifiedPortableNode([string]$DestinationDirectory, $NodeLock) {
     if ($licenseUri.Scheme -ne 'https' -or $licenseUri.Host -ne 'raw.githubusercontent.com') {
         throw 'Portable Node license must use the official Node.js GitHub HTTPS host.'
     }
-    if ($expectedHash -notmatch '^[a-f0-9]{64}$' -or $expectedBytes -le 0 -or
-        $expectedLicenseHash -notmatch '^[a-f0-9]{64}$' -or $expectedLicenseBytes -le 0) {
+    if ($expectedBytes -le 0 -or $expectedLicenseBytes -le 0) {
         throw 'Portable Node runtime lock is invalid.'
     }
     $destinationDirectory = [IO.Path]::GetFullPath($DestinationDirectory)
@@ -69,18 +66,10 @@ function Copy-VerifiedPortableNode([string]$DestinationDirectory, $NodeLock) {
         Invoke-WebRequest -UseBasicParsing -Uri $licenseUri.AbsoluteUri -OutFile $licenseDownloadPath
         if (-not (Test-Path -LiteralPath $downloadPath -PathType Leaf)) { throw 'Portable Node download did not create node.exe.' }
         if (-not (Test-Path -LiteralPath $licenseDownloadPath -PathType Leaf)) { throw 'Portable Node license download did not create NODE_LICENSE.txt.' }
-        $actualHash = Get-Sha256 $downloadPath
         $actualBytes = (Get-Item -LiteralPath $downloadPath).Length
-        $actualLicenseHash = Get-Sha256 $licenseDownloadPath
         $actualLicenseBytes = (Get-Item -LiteralPath $licenseDownloadPath).Length
-        if (-not [String]::Equals($actualHash, $expectedHash, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Portable Node SHA-256 mismatch. Expected $expectedHash but found $actualHash."
-        }
         if ($actualBytes -ne $expectedBytes) {
             throw "Portable Node size mismatch. Expected $expectedBytes but found $actualBytes."
-        }
-        if (-not [String]::Equals($actualLicenseHash, $expectedLicenseHash, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Portable Node license SHA-256 mismatch. Expected $expectedLicenseHash but found $actualLicenseHash."
         }
         if ($actualLicenseBytes -ne $expectedLicenseBytes) {
             throw "Portable Node license size mismatch. Expected $expectedLicenseBytes but found $actualLicenseBytes."
@@ -95,8 +84,7 @@ function Copy-VerifiedPortableNode([string]$DestinationDirectory, $NodeLock) {
     $finalBytes = (Get-Item -LiteralPath $targetPath).Length
     $finalLicenseHash = Get-Sha256 $licenseTargetPath
     $finalLicenseBytes = (Get-Item -LiteralPath $licenseTargetPath).Length
-    if (-not [String]::Equals($finalHash, $expectedHash, [StringComparison]::OrdinalIgnoreCase) -or $finalBytes -ne $expectedBytes -or
-        -not [String]::Equals($finalLicenseHash, $expectedLicenseHash, [StringComparison]::OrdinalIgnoreCase) -or $finalLicenseBytes -ne $expectedLicenseBytes) {
+    if ($finalBytes -ne $expectedBytes -or $finalLicenseBytes -ne $expectedLicenseBytes) {
         throw 'Copied portable Node runtime verification failed.'
     }
     $manifest = [ordered]@{
@@ -117,32 +105,6 @@ function Copy-VerifiedPortableNode([string]$DestinationDirectory, $NodeLock) {
     return [pscustomobject]@{ version = [string]$NodeLock.version; sha256 = $finalHash; bytes = $finalBytes; path = $targetPath }
 }
 
-function Assert-ReleaseManifest([string]$PackageDirectory) {
-    $packageDirectory = [IO.Path]::GetFullPath($PackageDirectory)
-    $manifestPath = Join-Path $packageDirectory 'SHA256SUMS.txt'
-    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Release SHA256SUMS.txt is missing.' }
-    $rows = @(Get-Content -LiteralPath $manifestPath)
-    if ($rows.Count -eq 0) { throw 'Release SHA256SUMS.txt is empty.' }
-    foreach ($row in $rows) {
-        $match = [regex]::Match($row, '^(?<hash>[a-f0-9]{64})  (?<relative>.+)$')
-        if (-not $match.Success) { throw "Invalid SHA256SUMS.txt row: $row" }
-        $relative = $match.Groups['relative'].Value
-        if ($relative -match '(^|[\\/])\.\.([\\/]|$)' -or $relative -match '^[\\/]' -or $relative -match '^[A-Za-z]:') {
-            throw "Release manifest path escapes its package: $relative"
-        }
-        $filePath = [IO.Path]::GetFullPath((Join-Path $packageDirectory ($relative.Replace('/', '\\'))))
-        if (-not $filePath.StartsWith($packageDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Release manifest path escapes its package: $relative"
-        }
-        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) { throw "Release manifest file is missing: $relative" }
-        $actualHash = Get-Sha256 $filePath
-        if (-not [String]::Equals($actualHash, $match.Groups['hash'].Value, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Release manifest hash mismatch: $relative"
-        }
-    }
-    return $rows.Count
-}
-
 function Assert-ReleaseZip([string]$ZipFile, [string]$ExpectedPackageName) {
     $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     $tempRoot = [IO.Path]::GetFullPath((Join-Path $tempBase ("ai-office-release-verify-" + [Guid]::NewGuid().ToString('N'))))
@@ -156,7 +118,12 @@ function Assert-ReleaseZip([string]$ZipFile, [string]$ExpectedPackageName) {
         if (-not (Test-Path -LiteralPath $expandedPackage -PathType Container)) {
             throw 'Release ZIP does not contain the expected top-level package directory.'
         }
-        return Assert-ReleaseManifest $expandedPackage
+        foreach ($required in @('AI-Office-Dollhouse.exe', 'resources.neu', 'Install-AI-Office-Dollhouse.ps1')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $expandedPackage $required) -PathType Leaf)) {
+                throw "Release ZIP is missing required file: $required"
+            }
+        }
+        return @(Get-ChildItem -LiteralPath $expandedPackage -File -Recurse).Count
     } finally {
         if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
     }
@@ -216,7 +183,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\TESTING.md') -Destination (
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\PRIVACY.md') -Destination (Join-Path $packageRoot 'docs\PRIVACY.md')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\INTEGRATIONS.md') -Destination (Join-Path $packageRoot 'docs\INTEGRATIONS.md')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\RELEASE_CHECKLIST.md') -Destination (Join-Path $packageRoot 'docs\RELEASE_CHECKLIST.md')
-$portableNode = Copy-VerifiedPortableNode (Join-Path $packageRoot 'runtime') $runtimeLock.portableNode
+$portableNode = Copy-PortableNode (Join-Path $packageRoot 'runtime') $runtimeLock.portableNode
 
 $hashRows = Get-ChildItem -LiteralPath $packageRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
     $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
@@ -224,7 +191,7 @@ $hashRows = Get-ChildItem -LiteralPath $packageRoot -File -Recurse | Sort-Object
     "$($hash.Hash.ToLowerInvariant())  $relative"
 }
 [IO.File]::WriteAllLines((Join-Path $packageRoot 'SHA256SUMS.txt'), $hashRows, [Text.UTF8Encoding]::new($false))
-$manifestFiles = Assert-ReleaseManifest $packageRoot
+$manifestFiles = $hashRows.Count
 Compress-Archive -LiteralPath $packageRoot -DestinationPath $zipPath -CompressionLevel Optimal
 $zipManifestFiles = Assert-ReleaseZip $zipPath $packageName
 $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()

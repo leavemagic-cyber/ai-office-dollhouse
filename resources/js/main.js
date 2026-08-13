@@ -143,6 +143,10 @@ function compactModel(state, existingSnapshot, resourceManager, systemMetrics, s
         delegatedAuthority: visibleLabel(pod.delegatedAuthority, privacy, ''),
         overflowAgentCount: Math.max(0, pod.overflowAgentCount || 0),
         lastActivityAt: pod.lastActivityAt,
+        idleFrom: pod.idleFrom || null,
+        idleSinceAt: Number(pod.idleSinceAt) || null,
+        deliveredCount: Math.max(0, Number(pod.deliveredCount) || 0),
+        deliveredAt: Number(pod.deliveredAt) || null,
         agents: Object.values(pod.agents || {})
           .filter((agent) => agent.lifecycle !== 'finished')
           .map((agent, agentIndex) => ({
@@ -286,6 +290,11 @@ async function startTower() {
   const floorRoot = document.getElementById('tower-floors');
   let floorObserver = null;
   let overlayVisible = false;
+  // The app deliberately starts hidden while it builds its first model. Some Windows
+  // WebView launches report that hidden bootstrap window as "minimized". Restore this
+  // one bootstrap transition explicitly; later automatic events still respect a real
+  // user minimize action.
+  let startupShowPending = true;
   let activeFloorCount = 0;
   let appliedWindowGeometry = '';
   let screenInfo = null;
@@ -432,7 +441,11 @@ async function startTower() {
     tower.hidden = !shouldShow;
     if (shouldShow === overlayVisible) return;
     overlayVisible = shouldShow;
-    if (shouldShow) bridge.show({ focus: false }).catch(() => {});
+    if (shouldShow) {
+      const force = startupShowPending;
+      startupShowPending = false;
+      bridge.show({ focus: false, force }).catch(() => {});
+    }
     else restoreClickThroughForChrome().finally(() => bridge.hide().catch(() => {}));
   }
 
@@ -672,6 +685,8 @@ async function startTower() {
   });
   const inbox = new EventInboxReader({
     bridge,
+    tailSnapshot: true,
+    intervalMs: 1_500,
     onEvent: (event) => { applyOfficeEvent(state, event, Date.now()); scheduleBroadcast(); },
     onStatus: (status) => {
       if (status.ok === false) document.getElementById('tower-message').textContent = '事件檔有無法解析的資料，已忽略該列。';
@@ -807,23 +822,28 @@ async function startTower() {
     }, 0);
   });
 
-  const [, , , integrationResult] = await Promise.all([
-    discovery.scan({ force: true }),
-    inbox.poll(),
-    refreshExistingSnapshot(),
-    ensureIntegrationCoverage().catch((error) => ({ error: error.message }))
-  ]);
-  if (integrationResult?.installed?.length) {
-    document.getElementById('tower-message').textContent = `已自動啟用 ${integrationResult.installed.join('、')} 精準偵測；Codex 首次可能需信任一次。`;
-  } else if (integrationResult?.error) {
-    document.getElementById('tower-message').textContent = `精準偵測維持降級：${integrationResult.error}`;
-  }
-  integrationCoverage = integrationResult?.results || [];
+  // Live hook events are the truth layer and the fastest source. Read them and publish
+  // the first model before optional process/snapshot/config probes: a slow external
+  // helper must never leave the overlay hidden or replaying yesterday's shared model.
+  await inbox.poll();
   degradeStaleSessions(state, Date.now());
-  discovery.start();
   inbox.start();
   resourceManager.startCompaction();
   await broadcastModel();
+
+  discovery.start();
+  refreshExistingSnapshot();
+  ensureIntegrationCoverage()
+    .then((integrationResult) => {
+      if (integrationResult?.installed?.length) {
+        document.getElementById('tower-message').textContent = `已自動啟用 ${integrationResult.installed.join('、')} 精準偵測；Codex 首次可能需信任一次。`;
+      }
+      integrationCoverage = integrationResult?.results || [];
+      scheduleBroadcast();
+    })
+    .catch((error) => {
+      document.getElementById('tower-message').textContent = `精準偵測維持降級：${error.message}`;
+    });
 
   setInterval(() => {
     degradeStaleSessions(state, Date.now());

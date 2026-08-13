@@ -27,6 +27,15 @@ function createBridge(files) {
       const size = Number(options.size || Buffer.byteLength(entry.text, 'utf8'));
       reads.push({ path, pos, size });
       return Buffer.from(entry.text, 'utf8').subarray(pos, pos + size).toString('utf8');
+    },
+    async readBinaryFile(path, options = {}) {
+      const entry = files.get(path);
+      const source = Buffer.from(entry.text, 'utf8');
+      const pos = Number(options.pos || 0);
+      const size = Number(options.size || source.byteLength);
+      reads.push({ path, pos, size });
+      const slice = source.subarray(pos, pos + size);
+      return slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength);
     }
   };
 }
@@ -103,6 +112,19 @@ test('event inbox reads bounded incremental slices and carries a partial NDJSON 
   assert.ok(bridge.reads.every((read) => read.size <= 256));
 });
 
+test('write-changing creation metadata does not reset the incremental cursor', async () => {
+  const files = new Map([['events.ndjson', { text: line({ eventId: 'first' }), createdAt: 1000.1 }]]);
+  const bridge = createBridge(files);
+  const received = [];
+  const reader = new EventInboxReader({ bridge, onEvent: (event) => received.push(event), readChunkBytes: 256 });
+  assert.equal(await reader.poll(), 1);
+  files.get('events.ndjson').createdAt = 9000;
+  files.get('events.ndjson').text += line({ eventId: 'second' });
+  assert.equal(await reader.poll(), 1);
+  assert.deepEqual(received.map((event) => event.eventId), ['first', 'second']);
+  assert.ok(bridge.reads.at(-1).pos > 0);
+});
+
 test('event inbox recovers from archive replacement and current-file truncation', async () => {
   const files = new Map([
     ['events.1.ndjson', { text: line({ eventId: 'archive-before' }), createdAt: 1 }],
@@ -171,6 +193,31 @@ test('event inbox does not mistake a normal append after a short final chunk for
   assert.deepEqual(received.map((event) => event.eventId), ['normal-after-short-tail']);
   const archiveReads = bridge.reads.filter((read) => read.path === 'events.1.ndjson');
   assert.equal(archiveReads.at(-1).pos, originalSize);
+});
+
+test('a large existing inbox starts from its live tail instead of replaying stale history', async () => {
+  const stale = Array.from({ length: 80 }, (_, index) => line({ eventId: `stale-${index}`, pad: 'x'.repeat(20) })).join('');
+  const latest = line({ eventId: 'current-live', eventType: 'turn_started' });
+  const files = new Map([['events.ndjson', { text: stale + latest, createdAt: 1 }]]);
+  const bridge = createBridge(files);
+  const received = [];
+  const reader = new EventInboxReader({ bridge, onEvent: (event) => received.push(event), readChunkBytes: 128, tailBytes: 128 });
+  assert.ok(await reader.poll() >= 1);
+  assert.equal(received.at(-1).eventId, 'current-live');
+  assert.ok(received.length < 5, 'startup reads only a bounded tail, not all stale rows');
+  assert.ok(bridge.reads[0].pos > 0);
+});
+
+test('live-tail mode rereads safely, deduplicates rows, and notices later appends', async () => {
+  const files = new Map([['live-events.ndjson', { text: line({ eventId: 'live-a', eventType: 'turn_started' }), createdAt: 1 }]]);
+  const bridge = createBridge(files);
+  const received = [];
+  const reader = new EventInboxReader({ bridge, onEvent: (event) => received.push(event), tailSnapshot: true, tailBytes: 256 });
+  assert.equal(await reader.poll(), 1);
+  assert.equal(await reader.poll(), 0);
+  files.get('live-events.ndjson').text += line({ eventId: 'live-b', eventType: 'tool_started' });
+  assert.equal(await reader.poll(), 1);
+  assert.deepEqual(received.map((event) => event.eventId), ['live-a', 'live-b']);
 });
 
 test('event inbox tails oversized files and rejects malformed or oversized lines without surfacing content', async () => {

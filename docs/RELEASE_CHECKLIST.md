@@ -1,8 +1,8 @@
-# 0.3.2 發行檢查表
+# 0.3.4 發行檢查表
 
 日期：2026-08-13
 
-CI 修補：`resources/js/neutralino.d.ts` 已固定使用 LF，避免 Windows runner 自動轉成 CRLF 後造成錯誤的雜湊失敗。
+Owner 決策：雜湊值不再作為封裝核准門檻；`SHA256SUMS.txt` 與 ZIP SHA 僅是資訊性產物。
 
 1. PASS　人偶只有頭部實心，軀幹與四肢維持開放線條
 2. PASS　身分色只在腳下色條和平面圖圓盤出現
@@ -28,4 +28,4 @@ CI 修補：`resources/js/neutralino.d.ts` 已固定使用 LF，避免 Windows r
 
 另外修正三個提示未涵蓋的問題：四人團隊曾只有三張工作桌、Claude hook 的 Windows 路徑曾被 Bash 吃掉反斜線、程式與捷徑曾使用 Neutralino 預設圖示。
 
-最終驗證為 90/90 項測試通過；專案檢查涵蓋 64 個檔案與 23 個 JavaScript 檔；8 小時虛擬 soak 共處理 12,000 個事件並清空 pod／agent／delegation，事件環形上限維持 500；發行包與 ZIP 內 28 個 manifest 檔一致。ZIP SHA-256 由封裝輸出與 GitHub Release 記錄，不寫回包內文件，避免壓縮檔自我參照造成雜湊循環。Grok 修後審查結論為 `NO MUST-FIX`；最終審查明確使用 `grok-4.6`。
+最終驗證為 113/113 項測試通過；真實 Claude 任務跨重啟維持 running 並在 stop 後退場，真實 Grok 兩輪 lifecycle 無重複 completion；P4 與 A–J 均在真正桌面渲染器完成隔離播放。發行包仍輸出資訊性 manifest 與 ZIP SHA，但不得以雜湊差異阻止封裝。

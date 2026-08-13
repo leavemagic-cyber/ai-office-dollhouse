@@ -6,6 +6,7 @@ import {
   currentPresenceOpen,
   floorForEvent,
   floorKey,
+  floorPopulationForDisplay,
   floorSpecsForModel,
   livePodsForDisplay,
   PEOPLE_PER_ANNEX,
@@ -83,8 +84,60 @@ test('active-only layout removes idle shells and keeps only floors with useful w
     }
   };
   const specs = floorSpecsForModel(model, roomMeta, { activeOnly: true });
-  // Owner is permanent; the live and snapshot work remain on provider-isolated floors.
-  assert.deepEqual(specs.map((spec) => spec.key), ['owner', 'codex', 'claude']);
+  // Owner is permanent. A live floor wins the active overlay outright, so historical
+  // cards cannot push the real worker below the visible area.
+  assert.deepEqual(specs.map((spec) => spec.key), ['owner', 'codex']);
+});
+
+test('live floors keep provider order and suppress snapshot-only cards', () => {
+  const model = {
+    generatedAt: 6_000_000,
+    owner: { inboxCount: 0 },
+    recentEvents: [],
+    providers: {
+      codex: { livePods: [{ ...pod('old', 'old live'), lastActivityAt: 100 }], snapshotWork: [{ recent: true, id: 'c-snap', updatedAt: 900 }] },
+      claude: { livePods: [{ ...pod('new', 'new live'), lastActivityAt: 800 }], snapshotWork: [] },
+      gemini: { livePods: [], snapshotWork: [{ recent: true, id: 'g-snap', updatedAt: 1_000 }] },
+      grok: { livePods: [], snapshotWork: [] }
+    }
+  };
+  const specs = floorSpecsForModel(model, roomMeta, { activeOnly: true });
+  assert.deepEqual(specs.map((spec) => spec.sessionId), [undefined, 'old', 'new']);
+  assert.equal(specs.some((spec) => spec.evidenceSource === 'snapshot'), false);
+});
+
+test('snapshot-only mode keeps a bounded newest-first static digest', () => {
+  const model = {
+    generatedAt: 6_000_000,
+    owner: { inboxCount: 0 },
+    recentEvents: [],
+    providers: {
+      codex: { livePods: [], snapshotWork: [{ recent: true, id: 'old', updatedAt: 100 }] },
+      claude: { livePods: [], snapshotWork: [{ recent: true, id: 'new', updatedAt: 300 }] },
+      gemini: { livePods: [], snapshotWork: [{ recent: true, id: 'middle', updatedAt: 200 }] },
+      grok: { livePods: [], snapshotWork: [] }
+    }
+  };
+  const specs = floorSpecsForModel(model, roomMeta, { activeOnly: true });
+  assert.deepEqual(specs.map((spec) => spec.sessionId), [undefined, 'new', 'middle']);
+});
+
+test('recent snapshots keep a static floor but contribute zero people', () => {
+  const snapshotNow = 5_000_000;
+  const model = {
+    generatedAt: snapshotNow,
+    owner: { inboxCount: 0 },
+    providers: {
+      codex: { livePods: [], snapshotWork: [{ recent: true, id: 'snap', label: '近期工作', agents: [{ label: 'old-helper' }] }] },
+      claude: { livePods: [], snapshotWork: [] },
+      gemini: { livePods: [], snapshotWork: [] },
+      grok: { livePods: [], snapshotWork: [] }
+    },
+    recentEvents: []
+  };
+  const specs = floorSpecsForModel(model, roomMeta, { activeOnly: true });
+  assert.ok(specs.some((spec) => spec.room === 'codex'));
+  assert.equal(floorPopulationForDisplay(model, 'codex', 0), 0);
 });
 
 test('active-only layout surfaces a short important event without reviving idle provider floors', () => {

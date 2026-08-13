@@ -83,7 +83,7 @@ function recordingContext() {
   };
 }
 
-const POSES = ['stand', 'sit', 'type', 'walk', 'raise'];
+const POSES = ['stand', 'sit', 'type', 'drink', 'walk', 'raise'];
 
 function figureStrokes(options = {}) {
   const ctx = recordingContext();
@@ -188,7 +188,12 @@ test('every floor is laid out as an office, not scattered props', () => {
   assert.ok(lobby.seats.some((seat) => seat.role === 'reception'), 'the entrance floor keeps reception');
 
   const owner = officeLayout('owner', 1);
-  assert.ok(owner.items.some((item) => item.kind === 'desk' && item.tray), 'Owner room needs the inbox tray');
+  const ownerDesk = owner.items.find((item) => item.kind === 'desk' && item.tray);
+  const ownerSeat = owner.seats.find((seat) => seat.role === 'owner');
+  const ownerChair = owner.items.find((item) => item.kind === 'chair' && item.back);
+  assert.ok(ownerDesk, 'Owner room needs the inbox tray');
+  assert.equal(ownerDesk.monitors, 1, 'Owner works at a visible computer');
+  assert.deepEqual([ownerSeat.gx, ownerSeat.gy, ownerSeat.facing], [ownerChair.gx, ownerChair.gy, ownerChair.facing], 'Owner and the task chair share one desk position');
   assert.ok(owner.items.filter((item) => item.kind === 'chair').length >= 3, 'Owner room needs the waiting chairs');
   assert.ok(owner.seats.filter((seat) => seat.role === 'queue').length >= 2, 'Owner room needs a request queue');
   assert.ok(officeLayout('claude', 1).items.some((item) => item.kind === 'stamps'), 'Claude floor needs the stamp station');
@@ -320,7 +325,7 @@ test('the figure keeps one drawing language: solid head, line skeleton, colour o
 
 test('knees and elbows keep their spec angles, and no limb is a straight strut', () => {
   // Legs are the limbs that end on the floor; everything else at limb width is an arm.
-  const kneeBands = { stand: [163, 177], walk: [163, 177], 'walk-back': [163, 177], sit: [92, 108], type: [92, 108], raise: [163, 177], carry: [163, 177] };
+  const kneeBands = { stand: [163, 177], walk: [163, 177], 'walk-back': [163, 177], sit: [92, 108], type: [92, 108], drink: [92, 108], raise: [163, 177], carry: [163, 177] };
   for (const pose of [...POSES, 'walk-back', 'carry']) {
     const ctx = figureStrokes(
       pose === 'carry' ? { pose: 'walk', carry: true, swing: .3 }
@@ -335,7 +340,7 @@ test('knees and elbows keep their spec angles, and no limb is a straight strut',
     const arms = joints.filter((joint) => joint.points[2][1] <= -.5 && !yoke(joint.points));
     assert.equal(legs.length, 2, `${pose}: two legs must reach the floor`);
     // Seated figures are three-quarter views: the far arm is behind the torso.
-    assert.equal(arms.length, ['sit', 'type'].includes(pose) ? 1 : 2, `${pose}: wrong arm count`);
+    assert.equal(arms.length, ['sit', 'type', 'drink'].includes(pose) ? 1 : 2, `${pose}: wrong arm count`);
     const [low, high] = kneeBands[pose];
     for (const leg of legs) {
       const knee = jointAngle(leg.points);

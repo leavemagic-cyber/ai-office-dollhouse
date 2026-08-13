@@ -102,7 +102,9 @@ try {
         exit 0
     }
 
-    $rawInput = [Console]::In.ReadToEnd()
+    # Grok keeps the child stdin pipe open while waiting for the hook to exit. Hook
+    # payloads are a single JSON record, so reading one line avoids an EOF deadlock.
+    $rawInput = [Console]::In.ReadLine()
     if ([string]::IsNullOrWhiteSpace($rawInput) -or $rawInput.Length -gt 1048576) {
         Write-AiOfficeEmptyResult
         exit 0
@@ -147,7 +149,10 @@ try {
         'beforeagent' { 'turn_started' }
         'stop' {
             $explicitCompletion = Get-AiOfficeValue $payload @('task_completed', 'taskCompleted')
-            if ($explicitCompletion -eq $true) { 'task_completed' } else { 'turn_completed' }
+            $stopReason = ([string](Get-AiOfficeValue $payload @('reason', 'stop_reason', 'stopReason')) -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+            if ($explicitCompletion -eq $true) { 'task_completed' }
+            elseif ($Provider -ne 'grok' -or $stopReason -eq 'endturn') { 'turn_completed' }
+            else { '' }
         }
         'afteragent' { 'turn_completed' }
         'sessionend' { 'session_stopped' }
@@ -215,6 +220,14 @@ try {
     }
     $line = ($officeEvent | ConvertTo-Json -Compress -Depth 8) + [Environment]::NewLine
     [void](Add-AiOfficeEventLine $eventPath $line)
+    # Keep a small display inbox beside the append-only audit ledger. The desktop can
+    # read this bounded file every 1.5 seconds without replaying a multi-megabyte history.
+    $livePath = Join-Path $dataDirectory 'live-events.ndjson'
+    if ((Test-Path -LiteralPath $livePath) -and (Get-Item -LiteralPath $livePath).Length -gt 524288) {
+        $liveArchive = Join-Path $dataDirectory 'live-events.1.ndjson'
+        Move-Item -LiteralPath $livePath -Destination $liveArchive -Force
+    }
+    [void](Add-AiOfficeEventLine $livePath $line)
 }
 catch {
     # Hooks must always fail open and must never expose raw payloads in stderr.

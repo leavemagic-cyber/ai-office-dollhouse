@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CLOSE_CLEANUP_TIMEOUT_MS, NativeBridge } from '../resources/js/native-bridge.js';
+import { CLOSE_CLEANUP_TIMEOUT_MS, MODEL_WRITE_TIMEOUT_MS, NativeBridge } from '../resources/js/native-bridge.js';
 
 function withNativeWindow(windowApi) {
   const neutralinoBefore = Object.getOwnPropertyDescriptor(globalThis, 'Neutralino');
@@ -54,6 +54,20 @@ test('automatic show does not restore or focus a non-minimized overlay', async (
   assert.deepEqual(calls, ['isMinimized', 'show']);
 });
 
+test('explicit startup show restores a bootstrap window without focusing it', async (t) => {
+  const calls = [];
+  const restore = withNativeWindow({
+    isMinimized: async () => { calls.push('isMinimized'); return true; },
+    unminimize: async () => { calls.push('unminimize'); },
+    show: async () => { calls.push('show'); },
+    focus: async () => { calls.push('focus'); }
+  });
+  t.after(restore);
+
+  await new NativeBridge().show({ focus: false, force: true });
+  assert.deepEqual(calls, ['isMinimized', 'unminimize', 'show']);
+});
+
 test('close exits even when stale-lock cleanup fails', async (t) => {
   let exited = 0;
   const restore = withNativeRuntime({ app: { exit: async () => { exited += 1; } } });
@@ -92,7 +106,7 @@ test('missing Node snapshot helper degrades safely without blocking live events'
   }
 });
 
-test('shared model writes are serialized through a complete temporary file', async (t) => {
+test('shared model writes are serialized and never publish partial JSON', async (t) => {
   const root = 'C:\\local\\AIOfficeDollhouse';
   const target = `${root}\\office-state-v2.json`;
   const temporary = `${target}.next`;
@@ -101,30 +115,40 @@ test('shared model writes are serialized through a complete temporary file', asy
   const restore = withNativeRuntime({
     filesystem: {
       writeFile: async (path, data) => { calls.push(`write:${path}`); files.set(path, data); },
-      remove: async (path) => { calls.push(`remove:${path}`); files.delete(path); },
       move: async (source, destination) => {
         calls.push(`move:${source}`);
-        if (!files.has(source) || files.has(destination)) throw new Error('replacement order is unsafe');
+        assert.equal(files.has(destination), false, 'publisher must remove the destination before moving');
         files.set(destination, files.get(source));
         files.delete(source);
-      }
+      },
+      remove: async (path) => { calls.push(`remove:${path}`); files.delete(path); }
     }
   });
   t.after(restore);
   const bridge = new NativeBridge();
   bridge.dataDirectory = root;
-
   await Promise.all([
     bridge.writeSharedModel({ generation: 1 }),
     bridge.writeSharedModel({ generation: 2 })
   ]);
 
   assert.deepEqual(JSON.parse(files.get(target)), { generation: 2 });
-  assert.equal(files.has(temporary), false);
   assert.deepEqual(calls, [
     `write:${temporary}`, `remove:${target}`, `move:${temporary}`,
     `write:${temporary}`, `remove:${target}`, `move:${temporary}`
   ]);
+});
+
+test('a stuck native model write times out instead of freezing later broadcasts', async (t) => {
+  const restore = withNativeRuntime({
+    filesystem: { writeFile: () => new Promise(() => {}) }
+  });
+  t.after(restore);
+  const bridge = new NativeBridge();
+  bridge.dataDirectory = 'C:\\local\\AIOfficeDollhouse';
+  const startedAt = Date.now();
+  await bridge.writeSharedModel({ generation: 1 });
+  assert.ok(Date.now() - startedAt < MODEL_WRITE_TIMEOUT_MS + 600);
 });
 
 test('single-instance guard owns and releases only its token-matched lock', async (t) => {

@@ -4,6 +4,7 @@ const SNAPSHOT_PROVIDERS = ['codex', 'claude', 'gemini', 'grok'];
 const INSTANCE_STALE_MS = 45_000;
 const INSTANCE_HEARTBEAT_MS = 10_000;
 export const CLOSE_CLEANUP_TIMEOUT_MS = 250;
+export const MODEL_WRITE_TIMEOUT_MS = 2_500;
 
 function quoteWindows(value) {
   return `"${String(value).replaceAll('"', '\\"')}"`;
@@ -45,7 +46,8 @@ export class NativeBridge {
     this.instanceProcessId = null;
     this.instanceAcquired = false;
     this.instanceHeartbeatTimer = null;
-    this.modelWritePromise = Promise.resolve();
+    this.modelWritePromise = null;
+    this.pendingModelPayload = null;
   }
 
   async initialize() {
@@ -353,13 +355,14 @@ export class NativeBridge {
 
   async minimize() { if (this.isNative) await globalThis.Neutralino.window.minimize(); }
   async hide() { if (this.isNative) await globalThis.Neutralino.window.hide(); }
-  async show({ focus = false } = {}) {
+  async show({ focus = false, force = false } = {}) {
     if (!this.isNative) return;
     // A user-minimized overlay is an explicit "do not disturb" choice. Do not
     // revive it merely because another work event arrives.
     let minimized = false;
     try { minimized = await globalThis.Neutralino.window.isMinimized(); } catch { /* best effort */ }
-    if (minimized) return;
+    if (minimized && !force) return;
+    if (minimized) await globalThis.Neutralino.window.unminimize();
     await globalThis.Neutralino.window.show();
     if (focus) await globalThis.Neutralino.window.focus();
   }
@@ -395,6 +398,11 @@ export class NativeBridge {
     return globalThis.Neutralino.filesystem.readFile(path, options);
   }
 
+  async readBinaryFile(path, options = undefined) {
+    if (!this.isNative) return new ArrayBuffer(0);
+    return globalThis.Neutralino.filesystem.readBinaryFile(path, options);
+  }
+
   eventFile(name = 'events.ndjson') {
     return this.dataDirectory ? `${this.dataDirectory}\\${name}` : '';
   }
@@ -403,32 +411,52 @@ export class NativeBridge {
     return this.dataDirectory ? `${this.dataDirectory}\\office-state-v2.json` : '';
   }
 
+  startModelWriteDrain(target) {
+    if (this.modelWritePromise) return this.modelWritePromise;
+    const temporary = `${target}.next`;
+    const drain = async () => {
+      while (this.pendingModelPayload !== null) {
+        const payload = this.pendingModelPayload;
+        this.pendingModelPayload = null;
+        // One native writer at a time. Never ask the native runtime to move over an
+        // existing destination: some Windows backends implement that as a visible
+        // copy and an external reader can briefly observe partial JSON. Removing the
+        // old file first leaves only a tiny missing-file window, which readers retry.
+        await globalThis.Neutralino.filesystem.writeFile(temporary, payload);
+        try { await globalThis.Neutralino.filesystem.remove(target); } catch { /* first publication */ }
+        await globalThis.Neutralino.filesystem.move(temporary, target);
+      }
+    };
+    this.modelWritePromise = drain()
+      .catch((error) => this.log('warn', `Shared model refresh skipped: ${String(error?.code || 'write failed')}`))
+      .finally(() => {
+        this.modelWritePromise = null;
+        if (this.pendingModelPayload !== null) this.startModelWriteDrain(target);
+      });
+    return this.modelWritePromise;
+  }
+
   async writeSharedModel(model) {
     if (!this.isNative) return;
     const target = this.sharedModelFile();
-    const temporary = `${target}.next`;
-    const payload = JSON.stringify(model);
-    const write = async () => {
-      await globalThis.Neutralino.filesystem.writeFile(temporary, payload);
-      // Neutralino's move API intentionally has no overwrite flag. A short
-      // missing-file interval is safe (`readSharedModel` returns null), while
-      // this ordered replacement prevents readers from seeing half-written JSON.
-      try { await globalThis.Neutralino.filesystem.remove(target); } catch { /* first write or already absent */ }
-      await globalThis.Neutralino.filesystem.move(temporary, target);
-    };
-    const queued = this.modelWritePromise.catch(() => {}).then(write);
-    this.modelWritePromise = queued.catch((error) => {
-      this.log('warn', `Shared model refresh skipped: ${String(error?.code || 'write failed')}`);
-    });
-    await this.modelWritePromise;
+    this.pendingModelPayload = JSON.stringify(model);
+    this.startModelWriteDrain(target);
+    // The UI has already consumed the model. Bound only the caller's wait; keep the
+    // single underlying write alive so no stale write can be overtaken by a newer one.
+    await Promise.race([this.modelWritePromise, sleep(MODEL_WRITE_TIMEOUT_MS)]);
   }
 
   async readSharedModel() {
     if (!this.isNative) return null;
-    try {
-      const raw = await globalThis.Neutralino.filesystem.readFile(this.sharedModelFile());
-      return JSON.parse(raw);
-    } catch { return null; }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const raw = await globalThis.Neutralino.filesystem.readFile(this.sharedModelFile());
+        return JSON.parse(raw);
+      } catch {
+        if (attempt < 2) await sleep(20);
+      }
+    }
+    return null;
   }
 
   async memoryInfo() {
@@ -437,7 +465,7 @@ export class NativeBridge {
   }
 
   log(level, message) {
-    if (this.isNative) {
+    if (this.isNative && typeof globalThis.Neutralino?.debug?.log === 'function') {
       globalThis.Neutralino.debug.log(String(message), String(level || 'INFO').toUpperCase()).catch(() => {});
     } else {
       console.log(`[${level}] ${message}`);

@@ -67,6 +67,36 @@ test('process exit never completes a session', () => {
   assert.equal(state.surfaces['codex:app'].processState, 'exited');
 });
 
+test('turn idle, final delivery, and stopped keep distinct evidence', () => {
+  const state = createInitialState(base);
+  applyOfficeEvent(state, event({ eventId: 'start', eventType: 'session_started' }), base);
+  let pod = state.teams.codex.pods['session-a'];
+  assert.equal(pod.idleFrom, 'derived');
+  assert.equal(pod.deliveredCount, 0);
+
+  applyOfficeEvent(state, event({ eventId: 'turn', eventType: 'turn_started', timestamp: base + 1 }), base + 1);
+  assert.equal(pod.idleFrom, null);
+  applyOfficeEvent(state, event({ eventId: 'turn-done', eventType: 'turn_completed', timestamp: base + 2 }), base + 2);
+  assert.equal(pod.activity, 'idle');
+  assert.equal(pod.idleFrom, 'turn_completed');
+  assert.equal(pod.deliveredCount, 0);
+
+  applyOfficeEvent(state, event({ eventId: 'task-done', eventType: 'task_completed', timestamp: base + 3 }), base + 3);
+  assert.equal(pod.activity, 'idle');
+  assert.equal(pod.idleFrom, 'derived');
+  assert.equal(pod.deliveredCount, 1);
+  assert.equal(pod.deliveredAt, base + 3);
+
+  applyOfficeEvent(state, event({ eventId: 'stop', eventType: 'session_stopped', timestamp: base + 4 }), base + 4);
+  pod = state.teams.codex.pods['session-a'];
+  assert.equal(pod.lifecycle, 'completed');
+  assert.equal(pod.deliveredCount, 1, 'stopping never invents another delivery');
+  const late = applyOfficeEvent(state, event({ eventId: 'late-turn', eventType: 'turn_completed', timestamp: base + 5 }), base + 5);
+  assert.equal(late.applied, false);
+  assert.equal(late.reason, 'terminal_session_event');
+  assert.equal(pod.lifecycle, 'completed');
+});
+
 test('adapter disconnect degrades active work to unknown, not completed', () => {
   const state = createInitialState(base);
   applyOfficeEvent(state, event({ eventId: 'a', eventType: 'turn_started' }), base);
@@ -192,6 +222,15 @@ test('replayed active sessions become unknown when lifecycle evidence is stale',
   assert.equal(pod.lifecycle, 'active');
   assert.equal(pod.unknownSinceAt, base + 1000, 'staleness begins at the evidence deadline, not application restart time');
   assert.ok(Object.values(pod.agents).every((agent) => agent.activity === 'unknown'));
+});
+
+test('the default stale window preserves a ten-minute running task', () => {
+  const state = createInitialState(base);
+  applyOfficeEvent(state, event({ eventId: 'long-running', eventType: 'turn_started' }), base);
+  degradeStaleSessions(state, base + 9 * 60_000);
+  assert.equal(state.teams.codex.pods['session-a'].activity, 'running');
+  degradeStaleSessions(state, base + 10 * 60_000 + 1);
+  assert.equal(state.teams.codex.pods['session-a'].activity, 'unknown');
 });
 
 test('unresolved Owner requests survive stale and disconnect degradation until explicitly resolved', () => {

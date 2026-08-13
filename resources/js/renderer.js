@@ -123,7 +123,9 @@ function singleFloorOccupants(model) {
 export function totalOccupants(model) {
   // Owner has a separate permanent floor and does not consume a work-floor seat.
   return TEAM_ROOMS.reduce((sum, room) => sum
-    + sessionsForProvider(model?.providers?.[room]).reduce((people, session) => people + session.population, 0), 0);
+    + sessionsForProvider(model?.providers?.[room])
+      .filter((session) => session.source === 'live')
+      .reduce((people, session) => people + session.population, 0), 0);
 }
 
 /**
@@ -151,6 +153,9 @@ function occupantsForSession(room, model, session) {
       manager: isManager,
       snapshot: false,
       actionStyle: isManager ? 4 : 2,
+      idleFrom: pod.idleFrom || null,
+      idleSinceAt: Number(pod.idleSinceAt) || null,
+      deliveredCount: Math.max(0, Number(pod.deliveredCount) || 0),
       hidden: mainAway
     });
     for (const [index, agent] of helpers.entries()) {
@@ -160,10 +165,13 @@ function occupantsForSession(room, model, session) {
         provider: room,
         // Pod certainty dominates child decoration. A disconnected pod cannot leave
         // helpers walking or typing from their last pre-disconnect activity.
-        activity: pod.activity === 'unknown' ? 'unknown' : (agent.activity || 'working'),
+        activity: ['unknown', 'idle', 'completed'].includes(pod.activity) ? pod.activity : (agent.activity || 'working'),
         manager: false,
         snapshot: false,
-        actionStyle: [0, 1, 3, 2, 0][index % 5]
+        actionStyle: [0, 1, 3, 2, 0][index % 5],
+        idleFrom: pod.idleFrom || null,
+        idleSinceAt: Number(pod.idleSinceAt) || null,
+        deliveredCount: Math.max(0, Number(pod.deliveredCount) || 0)
       });
     }
     for (let index = 0; index < Math.max(0, pod.overflowAgentCount || 0); index += 1) {
@@ -175,17 +183,13 @@ function occupantsForSession(room, model, session) {
         manager: false,
         snapshot: false,
         aggregated: true,
-        actionStyle: [0, 1, 3, 2][index % 4]
+        actionStyle: [0, 1, 3, 2][index % 4],
+        idleFrom: pod.idleFrom || null,
+        idleSinceAt: Number(pod.idleSinceAt) || null,
+        deliveredCount: Math.max(0, Number(pod.deliveredCount) || 0)
       });
     }
-  } else {
-    const work = (model?.providers?.[room]?.snapshotWork || []).filter((item) => item.recent)[session.index];
-    if (!work) return [];
-    occupants.push({ id: work.id, label: work.label, provider: room, activity: 'snapshot', manager: work.openChildren > 0, snapshot: true, actionStyle: 0 });
-    for (const [index, agent] of (work.agents || []).entries()) {
-      occupants.push({ id: `${work.id}:${agent.label}`, label: agent.label, provider: room, activity: 'snapshot', manager: false, snapshot: true, actionStyle: 0 });
-    }
-  }
+  } else return [];
   return occupants
     .slice(0, FLOOR_WORKSTATIONS)
     .map((person, order) => ({ ...person, podIndex: Math.floor(order / SEATS_PER_ISLAND) }));
@@ -209,7 +213,7 @@ function sharedFloorOccupants(model) {
     .map((person, order) => ({ ...person, podIndex: Math.floor(order / SEATS_PER_ISLAND) }));
 }
 
-function occupantsFromModel(room, model, annexIndex = 0) {
+export function occupantsFromModel(room, model, annexIndex = 0) {
   if (room === SINGLE_FLOOR_KEY) return singleFloorOccupants(model);
   if (room === SHARED_FLOOR_KEY) return sharedFloorOccupants(model);
   if (room === 'owner') {
@@ -317,8 +321,120 @@ export function completionStage(progress) {
   return 'owner_report';
 }
 
-function poseFor(placement, options) {
-  const { time, mode, mobileRank, mobileCount, layout, room } = options;
+export const TURN_SETTLE_MS = 1_500;
+export const P4_SLOT_MS = 30_000;
+export const P4_ACTION_MS = 10_000;
+const P4_ACTIONS = Object.freeze(['daze', 'drink', 'read', 'water']);
+let p4Schedule = { slot: null, ownerId: null, action: null, cancelled: false };
+
+/**
+ * One deterministic building-wide P4 slot. A slot starts every 30 seconds, which stays
+ * inside the approved 20-40 second global cadence, and only one lifecycle-backed main
+ * worker can own it. Newly idle workers wait until the next full slot so no action starts
+ * halfway through and becomes unreadably short.
+ */
+export function idleCueForModel(model, personId, now = Date.now()) {
+  const mode = model?.effectiveMode || 'low';
+  const slot = Math.floor(Math.max(0, Number(now) || 0) / P4_SLOT_MS);
+  const slotStartedAt = slot * P4_SLOT_MS;
+  const elapsed = Math.max(0, Number(now) || 0) - slotStartedAt;
+  const candidates = TEAM_ROOMS.flatMap((provider) => (
+    (model?.providers?.[provider]?.livePods || [])
+      .filter((pod) => pod.activity === 'idle'
+        && pod.idleFrom === 'turn_completed'
+        && Number(pod.idleSinceAt) + TURN_SETTLE_MS <= slotStartedAt)
+      .map((pod) => `${pod.id}:main`)
+  )).sort();
+  if (p4Schedule.slot !== slot) {
+    p4Schedule = {
+      slot,
+      ownerId: candidates.length ? candidates[slot % candidates.length] : null,
+      action: P4_ACTIONS[slot % P4_ACTIONS.length],
+      cancelled: false
+    };
+  }
+  // Important/DND is a hard visual suppression. If it touches a slot, retire that whole
+  // slot instead of resuming a drink/read/watering trip halfway through when full mode
+  // returns. The next slot starts from progress zero with a fresh owner.
+  if (mode === 'important' || mode === 'dnd') {
+    p4Schedule.cancelled = true;
+    p4Schedule.ownerId = null;
+    return null;
+  }
+  if (p4Schedule.cancelled || elapsed >= P4_ACTION_MS) return null;
+  // If this slot's worker leaves or starts a new turn, finish the slot quietly. Never
+  // hand a half-played drink/read/watering action to somebody else mid-animation.
+  if (!p4Schedule.ownerId || !candidates.includes(p4Schedule.ownerId) || p4Schedule.ownerId !== personId) return null;
+  return {
+    action: p4Schedule.action,
+    progress: elapsed / P4_ACTION_MS,
+    startedAt: slotStartedAt
+  };
+}
+
+export function isCueMainPerson(person, event) {
+  const provider = String(event?.provider || '');
+  const sessionId = String(event?.sessionId || '');
+  if (!provider || !sessionId) return false;
+  return String(person?.id || '') === `pod:${provider}:${sessionId}:main`;
+}
+
+/** The J return leg ends at the exact desk assigned before the cue hid its main worker. */
+export function deliveryHomeForCue(room, model, annexIndex, layout, event) {
+  // Include an evidence-backed main who is temporarily away at Owner/discussion. J still
+  // returns that same person to the desk assigned before the cue hides its base figure.
+  const occupants = occupantsFromModel(room, model, annexIndex);
+  const placement = assignSeats(layout, occupants).find((entry) => isCueMainPerson(entry.person, event));
+  if (placement) return { gx: placement.gx, gy: placement.gy, facing: placement.facing };
+  const fallback = layout?.seats?.find((seat) => !seat.role) || { gx: 2.1, gy: 5.1, facing: -1 };
+  return { gx: fallback.gx, gy: fallback.gy, facing: fallback.facing || -1 };
+}
+
+/**
+ * Keep every remaining worker at the seat assigned before Signature J hides its courier.
+ * Assigning again after removing the courier lets a full floor slide somebody else into
+ * the return desk, so the courier and that worker overlap on the final leg.
+ */
+export function deliveryPlacementsForCue(layout, occupants, event) {
+  return assignSeats(layout, occupants)
+    .filter((entry) => !entry.person.hidden && !isCueMainPerson(entry.person, event));
+}
+
+export function deliveryReturnFacing(home, localProgress) {
+  return Number(localProgress) < .92 ? -1 : (home?.facing || -1);
+}
+
+function workerIdlePose(seat, placement, options) {
+  const { time, layout, idleCue } = options;
+  if (!idleCue) {
+    return { ...seat, pose: 'sit', swing: 0, lean: 0, facing: placement.facing, alpha: 1 };
+  }
+  const action = idleCue.action;
+  const wave = Math.sin(idleCue.progress * Math.PI * 2);
+  if (action === 'water') {
+    const plant = layout.items.find((item) => item.kind === 'plant');
+    if (!plant) return { ...seat, pose: 'sit', swing: 0, lean: -.55, facing: placement.facing, alpha: 1, idleAction: 'daze' };
+    const target = { gx: plant.gx - .55, gy: plant.gy - .2 };
+    const travel = travelPose(seat, target, idleCue.progress);
+    return {
+      ...travel,
+      facing: travel.facing || placement.facing,
+      alpha: 1,
+      idleAction: travel.pose === 'stand' && idleCue.progress >= .38 && idleCue.progress < .6 ? 'water' : null,
+      idleProgress: idleCue.progress
+    };
+  }
+  if (action === 'drink') {
+    return { ...seat, pose: 'drink', swing: wave, lean: .25, facing: placement.facing, alpha: 1, idleAction: 'drink', idleProgress: idleCue.progress };
+  }
+  if (action === 'read') {
+    return { ...seat, pose: 'sit', swing: 0, lean: .25 + wave * .12, facing: placement.facing, alpha: 1, idleAction: 'read', idleProgress: idleCue.progress };
+  }
+  return { ...seat, pose: 'sit', swing: 0, lean: -.7 + wave * .08, facing: placement.facing, alpha: 1, idleAction: 'daze', idleProgress: idleCue.progress };
+}
+
+export function poseFor(placement, options) {
+  const { time, mode, layout } = options;
   const person = placement.person;
   const seat = { gx: placement.gx, gy: placement.gy };
   const still = mode === 'dnd' || mode === 'important';
@@ -350,37 +466,15 @@ function poseFor(placement, options) {
     return { ...seat, pose: 'stand', swing: 0, facing: placement.facing, alpha: .75 };
   }
 
-  const cycle = mode === 'full' ? 2_400 : 4_200;
-  const local = still ? 0 : ((time + (placement.order || 0) * 430) % cycle) / cycle;
-
-  // Bounded walking: managers patrol, couriers deliver, everyone else works in place.
-  if (!still && mobileRank >= 0 && mobileCount > 0) {
-    const movers = mode === 'full' ? Math.min(2, mobileCount) : 1;
-    const trip = mode === 'full' ? 7_200 : 12_500;
-    const groups = Math.max(1, Math.ceil(mobileCount / movers));
-    const group = Math.floor(time / trip) % groups;
-    const first = group * movers;
-    if (mobileRank >= first && mobileRank < first + movers) {
-      const target = person.manager
-        ? { gx: layout.manager.gx, gy: Math.max(1.4, layout.manager.gy - 3.4) }
-        : room === 'claude'
-          ? { gx: 8.0, gy: 5.4 }
-          : { gx: layout.manager.gx, gy: layout.manager.gy };
-      const travel = travelPose(seat, target, (time % trip) / trip);
-      // travelPose owns the facing while someone is on the move; only the stages that
-      // leave it undefined fall back to the direction the seat looks.
-      return { ...travel, facing: travel.facing || placement.facing, alpha: 1 };
-    }
-  }
-
   if (activity === 'idle' || placement.role === 'queue') {
-    const breathe = still ? 0 : Math.sin(time / 900) * .25;
-    return { ...seat, pose: 'stand', swing: 0, lean: breathe, facing: placement.facing, alpha: 1 };
+    return workerIdlePose(seat, placement, { ...options, idleCue: still ? null : options.idleCue });
   }
   if (activity === 'discussing') {
     return { ...seat, pose: 'stand', swing: still ? 0 : Math.sin(time / 520) * .4, facing: placement.facing, alpha: 1 };
   }
   const seated = placement.desk === true || ['seat', 'desk', 'owner', 'meet'].includes(placement.role);
+  const cycle = mode === 'full' ? 2_400 : 4_200;
+  const local = still ? 0 : ((time + (placement.order || 0) * 430) % cycle) / cycle;
   return {
     ...seat,
     pose: seated ? 'type' : 'stand',
@@ -414,6 +508,54 @@ function drawOwnerIdleProp(ctx, x, y, theme, action) {
     ctx.fillText('z', x + 5, y - 12);
     ctx.font = 'bold 4px system-ui, sans-serif';
     ctx.fillText('z', x + 8, y - 15);
+  }
+  ctx.restore();
+}
+
+export function drawWorkerIdleProp(ctx, x, y, theme, action, progress = 0, facing = 1) {
+  if (!action) return;
+  ctx.save();
+  ctx.strokeStyle = theme.stroke;
+  ctx.fillStyle = theme.text;
+  ctx.lineWidth = .55;
+  // Figure geometry mirrors around its seat. Props have to use the same local frame or
+  // a left-facing worker reaches one way while the cup/document stays on the other side.
+  ctx.translate(x, y);
+  ctx.scale(facing < 0 ? -1 : 1, 1);
+  ctx.translate(-x, -y);
+  if (action === 'drink') {
+    const lift = .5 + Math.sin(clamp(progress) * Math.PI) * 1.3;
+    ctx.beginPath();
+    ctx.rect(x + 2.6, y - 9.2 - lift, 2.2, 2.4);
+    ctx.arc(x + 5.1, y - 8 - lift, .9, -Math.PI / 2, Math.PI / 2);
+    ctx.stroke();
+  } else if (action === 'read') {
+    ctx.beginPath();
+    ctx.moveTo(x + .6, y - 5.2);
+    ctx.lineTo(x + 5.5, y - 5.7);
+    ctx.lineTo(x + 5.2, y - 2.8);
+    ctx.lineTo(x + .5, y - 2.4);
+    ctx.closePath();
+    ctx.moveTo(x + 2.9, y - 5.45);
+    ctx.lineTo(x + 2.7, y - 2.6);
+    ctx.stroke();
+  } else if (action === 'water') {
+    ctx.beginPath();
+    ctx.rect(x + 2.2, y - 6.5, 3.4, 2.7);
+    ctx.moveTo(x + 5.6, y - 5.8);
+    ctx.lineTo(x + 8.1, y - 7.1);
+    ctx.stroke();
+    for (const offset of [0, 1.5, 3]) {
+      ctx.beginPath();
+      ctx.arc(x + 8.7 + offset, y - 5 + offset * .6, .38, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (action === 'daze') {
+    for (const offset of [0, 2, 4]) {
+      ctx.beginPath();
+      ctx.arc(x + 3.8 + offset, y - 13 - offset * .3, .35, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
   ctx.restore();
 }
@@ -535,13 +677,26 @@ function drawOwnerReport(ctx, project, theme, cue, time) {
 }
 
 /** Signature J, team side: the worker leaves the floor for the lift, delivery in hand. */
-function drawDeliveryRun(ctx, project, theme, cue, time) {
+function drawDeliveryRun(ctx, project, theme, cue, time, layout, deliveryHome) {
   const identity = IDENTITY[cue.event.provider] || null;
   const progress = clamp(cue.progress);
   const stage = completionStage(progress);
-  const [workerX, workerY] = project(2.1, 5.1);
+  const home = deliveryHome || layout?.seats?.find((seat) => !seat.role) || { gx: 2.1, gy: 5.1 };
+  const [workerX, workerY] = project(home.gx, home.gy);
   const [leadX, leadY] = project(5.3, 6.7);
   const [liftX, liftY] = project(PLATE.gridWidth - .4, 4.2);
+  if (progress >= .9) {
+    const local = ease((progress - .9) / .1);
+    drawFigure(ctx, liftX + (workerX - liftX) * local, liftY + (workerY - liftY) * local, theme, {
+      pose: local < .92 ? 'walk' : 'sit',
+      carry: false,
+      swing: Math.sin(time / 120) * .55,
+      facing: deliveryReturnFacing(home, local),
+      identity,
+      alpha: clamp((progress - .9) / .025)
+    });
+    return;
+  }
   let x = workerX;
   let y = workerY;
   if (stage === 'worker_to_lead') {
@@ -566,7 +721,7 @@ function drawDeliveryRun(ctx, project, theme, cue, time) {
   });
 }
 
-function drawSignatureCue(ctx, room, cue, theme, project, height, time) {
+function drawSignatureCue(ctx, room, cue, theme, project, height, time, layout, deliveryHome) {
   if (!cue) return;
   const progress = ease(cue.progress);
   const center = project(PLATE.gridWidth / 2, PLATE.gridDepth / 2 + 1.5);
@@ -641,7 +796,7 @@ function drawSignatureCue(ctx, room, cue, theme, project, height, time) {
   } else if (cue.kind === 'multi_delivery' || cue.kind === 'final_delivery') {
     // A finished task is walked over to the Owner, not floated across the plate.
     if (room === 'owner') drawOwnerReport(ctx, project, theme, cue, time);
-    else if (cue.kind === 'final_delivery') drawDeliveryRun(ctx, project, theme, cue, time);
+    else if (cue.kind === 'final_delivery') drawDeliveryRun(ctx, project, theme, cue, time, layout, deliveryHome);
     else {
       ctx.lineWidth = .7;
       for (let index = 0; index < 3; index += 1) {
@@ -709,6 +864,54 @@ function drawOverflowNote(ctx, theme, room, model, annexIndex, project) {
   ctx.restore();
 }
 
+function deliveredCountForFloor(room, model, annexIndex = 0) {
+  if (room === 'owner') {
+    return TEAM_ROOMS.reduce((sum, provider) => sum + (model?.providers?.[provider]?.livePods || [])
+      .reduce((providerSum, pod) => providerSum + Math.max(0, Number(pod.deliveredCount) || 0), 0), 0);
+  }
+  if (!TEAM_ROOMS.includes(room)) return 0;
+  const session = teamSessions(model, room)[annexIndex];
+  if (session?.source !== 'live') return 0;
+  const pod = (model?.providers?.[room]?.livePods || [])[session.index];
+  return Math.max(0, Number(pod?.deliveredCount) || 0);
+}
+
+function drawPersistentWorkMarkers(ctx, room, model, annexIndex, project, theme) {
+  const session = TEAM_ROOMS.includes(room) ? teamSessions(model, room)[annexIndex] : null;
+  if (session?.source === 'snapshot') {
+    const [x, y] = project(5.2, 6.8, .72);
+    ctx.save();
+    ctx.strokeStyle = theme.quiet;
+    ctx.fillStyle = theme.text;
+    ctx.lineWidth = .55;
+    ctx.setLineDash([1.2, 1]);
+    ctx.strokeRect(x - 13, y - 7, 26, 10);
+    ctx.setLineDash([]);
+    ctx.font = '4px "Microsoft JhengHei", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('RECENT SNAPSHOT', x, y - .5);
+    ctx.restore();
+  }
+
+  const delivered = deliveredCountForFloor(room, model, annexIndex);
+  if (delivered <= 0) return;
+  const [x, y] = room === 'owner'
+    ? project(5.45, 2.7, 1.22)
+    : project(2.15, 4.38, 1.08);
+  ctx.save();
+  ctx.strokeStyle = theme.working;
+  ctx.lineWidth = .5;
+  for (let index = 0; index < Math.min(3, delivered); index += 1) {
+    ctx.strokeRect(x - 3 + index * .7, y - 3.2 - index * .65, 6, 3.2);
+  }
+  if (delivered > 3) {
+    ctx.fillStyle = theme.text;
+    ctx.font = '4px system-ui, sans-serif';
+    ctx.fillText(`+${delivered - 3}`, x + 4, y - 4);
+  }
+  ctx.restore();
+}
+
 export class RoomRenderer {
   constructor({ canvas, room, annexIndex = 0, onFrame = null }) {
     this.canvas = canvas;
@@ -726,6 +929,7 @@ export class RoomRenderer {
     this.phase = 'entering';
     this.phaseStartedAt = typeof performance === 'object' ? performance.now() : 0;
     this.projection = 'axon';
+    this.lastReliablePoses = new Map();
     this.resize(canvas.width, canvas.height);
   }
 
@@ -818,14 +1022,20 @@ export class RoomRenderer {
     const project = plan
       ? planProjector()
       : projector({ centerX: PLATE.centerX, top: PLATE.top, unit: PLATE.unit });
-    // The floor already knows which session it belongs to, so no slicing by headcount:
-    // one subagent team per plate, everyone else in the shared office.
-    const occupants = occupantsFromModel(this.room, this.model, this.annexIndex).filter((person) => !person.hidden);
-    const layout = officeLayout(this.room, podCountFor(this.room, this.model, occupants));
-
     const now = Date.now();
     const cue = globalChoreography.current(now);
     const cueOnThisFloor = cueAppearsOnFloor(cue, { room: this.room, annexIndex: this.annexIndex }, this.model);
+    // The floor already knows which session it belongs to, so no slicing by headcount:
+    // one subagent team per plate, everyone else in the shared office.
+    const allOccupants = occupantsFromModel(this.room, this.model, this.annexIndex);
+    const occupants = allOccupants.filter((person) => !person.hidden);
+    const layout = officeLayout(this.room, podCountFor(this.room, this.model, occupants));
+    const deliveryHome = cueOnThisFloor && cue?.kind === 'final_delivery'
+      ? deliveryHomeForCue(this.room, this.model, this.annexIndex, layout, cue.event)
+      : null;
+    const hideDeliveryMain = cueOnThisFloor && cue?.kind === 'final_delivery'
+      && (TEAM_ROOMS.includes(this.room) || [SINGLE_FLOOR_KEY, SHARED_FLOOR_KEY].includes(this.room));
+
     if (!plan) {
       drawGuides(ctx, project, theme, this.logicalHeight, phase.plate);
       drawElevator(ctx, project, theme, this.logicalHeight, {
@@ -843,24 +1053,29 @@ export class RoomRenderer {
     // desk is drawn before it, so people sit at their desks instead of standing on them.
     const scene = [];
     const seatedSpots = [];
+    const workingSpots = [];
 
     if (phase.figures > 0) {
-      const placements = assignSeats(layout, occupants).map((placement, order) => ({ ...placement, order }));
-      const mobileIndices = placements
-        .map((placement, index) => ({ placement, index }))
-        .filter(({ placement }) => [2, 3, 4].includes(placement.person.actionStyle) && placement.role !== 'owner')
-        .map(({ index }) => index);
-      const posed = placements.map((placement, index) => ({
-        placement,
-        pose: poseFor(placement, {
+      const basePlacements = hideDeliveryMain
+        ? deliveryPlacementsForCue(layout, allOccupants, cue.event)
+        : assignSeats(layout, occupants);
+      const placements = basePlacements.map((placement, order) => ({ ...placement, order }));
+      const wallNow = Date.now();
+      const posed = placements.map((placement) => {
+        let pose = poseFor(placement, {
           time: sceneTime,
           mode,
-          mobileRank: mobileIndices.indexOf(index),
-          mobileCount: mobileIndices.length,
           layout,
-          room: this.room
-        })
-      }));
+          room: this.room,
+          idleCue: idleCueForModel(this.model, placement.person.id, wallNow)
+        });
+        if (placement.person.activity === 'unknown' && this.lastReliablePoses.has(placement.person.id)) {
+          pose = { ...this.lastReliablePoses.get(placement.person.id), alpha: .75 };
+        } else if (!['unknown', 'snapshot', 'cancelled', 'completed'].includes(placement.person.activity)) {
+          this.lastReliablePoses.set(placement.person.id, { ...pose });
+        }
+        return { placement, pose };
+      });
       // Figures are never shrunk. A floor is capped at six people plus the Owner, and the
       // seat plan keeps them apart at full size; shrinking was how the old plan bought
       // capacity it did not have, and it made the drawing worse to hide the overcrowding.
@@ -872,7 +1087,8 @@ export class RoomRenderer {
         if (appear <= 0) continue;
         // Convention: a seated figure replaces its chair; the figure plus a back arc is
         // the seat symbol. Standing people keep their chair so the seat still reads.
-        if (actor.pose.pose === 'type' || actor.pose.pose === 'sit') seatedSpots.push(actor.pose);
+        if (['type', 'sit', 'drink'].includes(actor.pose.pose)) seatedSpots.push(actor.pose);
+        if (actor.pose.pose === 'type' && ['working', 'running'].includes(person.activity)) workingSpots.push(actor.pose);
         scene.push({
           depth: actor.pose.gx + actor.pose.gy + .25,
           paint: () => {
@@ -899,6 +1115,7 @@ export class RoomRenderer {
               scale: figureScale
             });
             if (person.provider === 'owner') drawOwnerIdleProp(ctx, x, y, theme, actor.pose.ownerAction);
+            else drawWorkerIdleProp(ctx, x, y, theme, actor.pose.idleAction, actor.pose.idleProgress, actor.pose.facing);
             ctx.setLineDash([]);
             if (actor.pose.tag) drawQuestionTag(ctx, x, y - 14, theme, appear);
             if (person.aggregated) {
@@ -922,9 +1139,14 @@ export class RoomRenderer {
         const takenBySeatedFigure = item.kind === 'chair'
           && seatedSpots.some((spot) => Math.abs(spot.gx - item.gx) < .8 && Math.abs(spot.gy - item.gy) < .8);
         if (takenBySeatedFigure) continue;
+        const activeDesk = item.kind === 'desk'
+          && workingSpots.some((spot) => Math.abs(spot.gx - item.gx) < .7 && Math.abs(spot.gy - (item.gy + .62)) < .8);
+        const renderItem = activeDesk
+          ? { ...item, monitorSignal: .35 + Math.abs(Math.sin(sceneTime / 720)) * .65 }
+          : item;
         scene.push({
-          depth: itemDepth(item),
-          paint: () => (plan ? drawPlanItem : drawOfficeItem)(ctx, project, theme, item, itemProgress)
+          depth: itemDepth(renderItem),
+          paint: () => (plan ? drawPlanItem : drawOfficeItem)(ctx, project, theme, renderItem, itemProgress)
         });
       }
     }
@@ -932,8 +1154,9 @@ export class RoomRenderer {
     scene.sort((a, b) => a.depth - b.depth);
     for (const piece of scene) piece.paint();
     if (phase.figures > 0) drawOverflowNote(ctx, theme, this.room, this.model, this.annexIndex, project);
+    if (phase.furniture > 0) drawPersistentWorkMarkers(ctx, this.room, this.model, this.annexIndex, project, theme);
 
-    if (cueOnThisFloor) drawSignatureCue(ctx, this.room, cue, theme, project, this.logicalHeight, time);
+    if (cueOnThisFloor) drawSignatureCue(ctx, this.room, cue, theme, project, this.logicalHeight, time, layout, deliveryHome);
 
     const activity = floorStatusActivity(this.room, this.model, this.annexIndex);
     const pulse = mode === 'dnd' || mode === 'important' || !['working', 'waiting_owner', 'failed'].includes(activity)

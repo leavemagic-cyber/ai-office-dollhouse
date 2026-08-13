@@ -7,36 +7,6 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
-function Get-Sha256([string]$Path) {
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-}
-
-function Assert-ReleaseManifest([string]$PackageDirectory) {
-    $packageDirectory = [IO.Path]::GetFullPath($PackageDirectory)
-    $manifestPath = Join-Path $packageDirectory 'SHA256SUMS.txt'
-    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Release SHA256SUMS.txt is missing.' }
-    $rows = @(Get-Content -LiteralPath $manifestPath)
-    if ($rows.Count -eq 0) { throw 'Release SHA256SUMS.txt is empty.' }
-    foreach ($row in $rows) {
-        $match = [regex]::Match($row, '^(?<hash>[a-f0-9]{64})  (?<relative>.+)$')
-        if (-not $match.Success) { throw "Invalid SHA256SUMS.txt row: $row" }
-        $relative = $match.Groups['relative'].Value
-        if ($relative -match '(^|[\\/])\.\.([\\/]|$)' -or $relative -match '^[\\/]' -or $relative -match '^[A-Za-z]:') {
-            throw "Release manifest path escapes its package: $relative"
-        }
-        $filePath = [IO.Path]::GetFullPath((Join-Path $packageDirectory ($relative.Replace('/', '\\'))))
-        if (-not $filePath.StartsWith($packageDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Release manifest path escapes its package: $relative"
-        }
-        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) { throw "Release manifest file is missing: $relative" }
-        $actualHash = Get-Sha256 $filePath
-        if (-not [String]::Equals($actualHash, $match.Groups['hash'].Value, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Release manifest hash mismatch: $relative"
-        }
-    }
-    return $rows.Count
-}
-
 if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
     $candidate = [IO.Path]::GetFullPath($PSScriptRoot)
     $SourceRoot = if (Test-Path -LiteralPath (Join-Path $candidate 'AI-Office-Dollhouse.exe')) {
@@ -69,7 +39,7 @@ if (-not (Test-Path -LiteralPath $sourceExe) -or -not (Test-Path -LiteralPath $s
     -not (Test-Path -LiteralPath $sourceNode) -or -not (Test-Path -LiteralPath $sourceNodeManifest)) {
     throw 'This installer must be run from the extracted Windows release package.'
 }
-$sourceManifestFiles = Assert-ReleaseManifest $SourceRoot
+$sourceReleaseFiles = @(Get-ChildItem -LiteralPath $SourceRoot -File -Recurse).Count
 
 $targetExe = Join-Path $InstallRoot 'AI-Office-Dollhouse.exe'
 if (Test-Path -LiteralPath $targetExe) {
@@ -137,5 +107,5 @@ if ($Launch) { Start-Process -FilePath $targetExe -WorkingDirectory $InstallRoot
     startShortcut = $startShortcut
     integrations = $integration
     launched = [bool]$Launch
-    verifiedReleaseFiles = $sourceManifestFiles
+    sourceReleaseFiles = $sourceReleaseFiles
 } | ConvertTo-Json -Depth 8 -Compress

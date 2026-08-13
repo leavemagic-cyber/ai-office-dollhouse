@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -61,6 +61,7 @@ test('hook relay stores only allowlisted metadata and never raw prompt', { skip:
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, '{}');
   const stored = readFileSync(join(dataDirectory, 'events.ndjson'), 'utf8');
+  assert.equal(readFileSync(join(dataDirectory, 'live-events.ndjson'), 'utf8'), stored);
   assert.equal(stored.includes(rawPrompt), false);
   assert.equal(stored.includes('transcript.jsonl'), false);
   assert.equal(stored.includes('session-secret-id'), false);
@@ -91,9 +92,42 @@ test('compiled hook relay is private, fail-open, and provider-aware', { skip: pr
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, '{}');
   const stored = readFileSync(join(dataDirectory, 'events.ndjson'), 'utf8');
+  assert.equal(readFileSync(join(dataDirectory, 'live-events.ndjson'), 'utf8'), stored);
   assert.equal(stored.includes(rawPrompt), false);
   assert.equal(stored.includes('fast-secret-session'), false);
   assert.equal(JSON.parse(stored).eventType, 'turn_started');
+});
+
+test('compiled hook relay exits after one JSON line even when stdin stays open', { skip: process.platform !== 'win32' }, async () => {
+  const dataDirectory = mkdtempSync(join(tmpdir(), 'ai-office-open-stdin-'));
+  const relay = join(root, 'scripts', 'relay', 'AIOfficeHookRelay.exe');
+  const child = spawn(relay, ['grok', 'auto'], {
+    cwd: root,
+    env: { ...process.env, AI_OFFICE_DATA_DIR: dataDirectory },
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  child.stdin.write(`${JSON.stringify({
+    session_id: 'grok-open-pipe',
+    hook_event_name: 'SessionStart',
+    cwd: 'C:\\Work\\Office Animation'
+  })}\n`);
+  const status = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('relay waited for EOF instead of exiting after one JSON line'));
+    }, 1_000);
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('exit', (code) => { clearTimeout(timer); resolve(code); });
+  });
+  assert.equal(status, 0, stderr);
+  assert.equal(stdout, '{}');
+  assert.equal(JSON.parse(readFileSync(join(dataDirectory, 'events.ndjson'), 'utf8')).eventType, 'session_started');
 });
 
 test('only an explicit completion signal produces task_completed', { skip: process.platform !== 'win32' }, () => {
@@ -110,6 +144,22 @@ test('only an explicit completion signal produces task_completed', { skip: proce
     assert.equal(explicit.status, 0, explicit.stderr);
     assert.equal(JSON.parse(readFileSync(join(ordinaryRoot, 'events.ndjson'), 'utf8')).eventType, 'turn_completed');
     assert.equal(JSON.parse(readFileSync(join(explicitRoot, 'events.ndjson'), 'utf8')).eventType, 'task_completed');
+  }
+});
+
+test('Grok session-end Stop is ignored instead of duplicating turn completion', { skip: process.platform !== 'win32' }, () => {
+  const relay = join(root, 'scripts', 'relay', 'AIOfficeHookRelay.exe');
+  for (const runner of [
+    (input, dataDirectory) => runScript('hook-relay.ps1', ['-Provider', 'grok', '-SurfaceKind', 'auto'], { input, env: { ...process.env, AI_OFFICE_DATA_DIR: dataDirectory } }),
+    (input, dataDirectory) => spawnSync(relay, ['grok', 'auto'], { cwd: root, encoding: 'utf8', input, env: { ...process.env, AI_OFFICE_DATA_DIR: dataDirectory } })
+  ]) {
+    const rootPath = mkdtempSync(join(tmpdir(), 'ai-office-grok-stop-'));
+    const ordinary = runner(JSON.stringify({ session_id: 's', hook_event_name: 'Stop', reason: 'end_turn' }), rootPath);
+    const ended = runner(JSON.stringify({ session_id: 's', hook_event_name: 'Stop', reason: 'channel_closed' }), rootPath);
+    assert.equal(ordinary.status, 0, ordinary.stderr);
+    assert.equal(ended.status, 0, ended.stderr);
+    const events = readFileSync(join(rootPath, 'events.ndjson'), 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+    assert.deepEqual(events.map((event) => event.eventType), ['turn_completed']);
   }
 });
 
@@ -177,8 +227,13 @@ test('hook relays only present subagent stop as terminal when the payload proves
 
 test('integration installer backs up and merges idempotently in an isolated root', { skip: process.platform !== 'win32' }, () => {
   const configRoot = mkdtempSync(join(tmpdir(), 'ai-office-config-'));
+  const codexPath = join(configRoot, '.codex', 'hooks.json');
   const claudePath = join(configRoot, '.claude', 'settings.json');
+  mkdirSync(dirname(codexPath), { recursive: true });
   mkdirSync(dirname(claudePath), { recursive: true });
+  writeFileSync(codexPath, JSON.stringify({
+    hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'existing-codex-hook' }] }] }
+  }, null, 2));
   writeFileSync(claudePath, JSON.stringify({
     permissions: { defaultMode: 'default' },
     hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'existing-safe-hook' }] }] }
@@ -189,11 +244,15 @@ test('integration installer backs up and merges idempotently in an isolated root
   assert.equal(first.status, 0, first.stderr);
   const firstResult = lastJsonLine(first.stdout);
   assert.equal(firstResult.ok, true);
-  assert.match(firstResult.results.find((item) => item.provider === 'codex').path, /[\\/]\.codex[\\/]hooks[\\/]hooks\.json$/i);
+  assert.match(firstResult.results.find((item) => item.provider === 'codex').path, /[\\/]\.codex[\\/]hooks\.json$/i);
   const second = runScript('install-integrations.ps1', args);
   assert.equal(second.status, 0, second.stderr);
 
   const claude = JSON.parse(readFileSync(claudePath, 'utf8'));
+  const codex = JSON.parse(readFileSync(codexPath, 'utf8'));
+  const codexCommands = codex.hooks.SessionStart.flatMap((group) => group.hooks.map((hook) => hook.command));
+  assert.ok(codexCommands.includes('existing-codex-hook'));
+  assert.equal(codexCommands.filter((command) => command.includes('AIOfficeHookRelay.exe')).length, 1);
   const commands = claude.hooks.SessionStart.flatMap((group) => group.hooks.map((hook) => hook.command));
   assert.ok(commands.includes('existing-safe-hook'));
   assert.equal(commands.filter((command) => command.includes('AIOfficeHookRelay.exe')).length, 1);
@@ -221,7 +280,7 @@ test('integration installer backs up and merges idempotently in an isolated root
   assert.ok(readdirSync(dirname(claudePath)).some((name) => name.startsWith('settings.json.bak_ai_office_')));
 
   const expected = [
-    join(configRoot, '.codex', 'hooks', 'hooks.json'),
+    join(configRoot, '.codex', 'hooks.json'),
     join(configRoot, '.gemini', 'settings.json'),
     join(configRoot, '.grok', 'hooks', 'ai-office-dollhouse.json')
   ];
@@ -235,7 +294,7 @@ test('integration installer serializes newly created hook groups as arrays', { s
   assert.equal(lastJsonLine(result.stdout).ok, true);
 
   const settings = [
-    join(configRoot, '.codex', 'hooks', 'hooks.json'),
+    join(configRoot, '.codex', 'hooks.json'),
     join(configRoot, '.claude', 'settings.json'),
     join(configRoot, '.gemini', 'settings.json'),
     join(configRoot, '.grok', 'hooks', 'ai-office-dollhouse.json')
@@ -251,6 +310,11 @@ test('integration installer serializes newly created hook groups as arrays', { s
     if (path.endsWith(join('.gemini', 'settings.json'))) {
       for (const groups of Object.values(config.hooks)) {
         assert.equal(groups[0].hooks[0].timeout, 5000, 'Gemini hook timeout must remain milliseconds');
+      }
+    }
+    if (path.endsWith(join('.grok', 'hooks', 'ai-office-dollhouse.json'))) {
+      for (const groups of Object.values(config.hooks)) {
+        assert.equal(groups[0].hooks[0].timeout, 5, 'Grok uses its documented five-second timeout');
       }
     }
   }

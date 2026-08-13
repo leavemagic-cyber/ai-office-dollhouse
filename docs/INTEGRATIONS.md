@@ -8,7 +8,7 @@
 
 | Provider | 設定位置 | 事件範圍 |
 |---|---|---|
-| Codex | `~/.codex/hooks/hooks.json` | SessionStart、UserPromptSubmit、Stop、SubagentStart/Stop、SessionEnd、PermissionRequest |
+| Codex | `~/.codex/hooks.json` | SessionStart、UserPromptSubmit、Stop、SubagentStart/Stop、SessionEnd、PermissionRequest |
 | Claude | `~/.claude/settings.json` | SessionStart、UserPromptSubmit、Stop、SubagentStart/Stop、SessionEnd、Notification |
 | Gemini | `~/.gemini/settings.json` | SessionStart、BeforeAgent、AfterAgent、SessionEnd |
 | Grok | `~/.grok/hooks/ai-office-dollhouse.json` | SessionStart、UserPromptSubmit、Stop、SubagentStart/Stop、SessionEnd、Notification |
