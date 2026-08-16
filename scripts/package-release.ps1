@@ -17,7 +17,14 @@ $runtimeLock = [IO.File]::ReadAllText($runtimeLockPath, [Text.UTF8Encoding]::new
 if ([int]$runtimeLock.schemaVersion -ne 1) { throw 'Unsupported pinned runtime lock schema.' }
 
 function Get-Sha256([string]$Path) {
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $stream = [IO.File]::OpenRead([IO.Path]::GetFullPath($Path))
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
 }
 
 function Remove-ProjectGeneratedDirectory([string]$Name) {
@@ -139,6 +146,8 @@ foreach ($generatedDirectory in @('.tmp', '.visual-test', 'bin', 'dist', 'releas
 
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build-relay.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Relay build failed.' }
+& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build-click-through.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Click-through guard build failed.' }
 & npm.cmd test
 if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
 & npm.cmd run check
@@ -155,6 +164,7 @@ if (Test-Path -LiteralPath $packageRoot) { Remove-Item -LiteralPath $packageRoot
 if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
 New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $packageRoot 'scripts\relay') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $packageRoot 'scripts\click-through') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $packageRoot 'docs') -Force | Out-Null
 
 $distRoot = Join-Path $projectRoot 'dist\ai-office-dollhouse'
@@ -165,10 +175,10 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\install-integrations.ps1
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\set-low-priority.ps1') -Destination (Join-Path $packageRoot 'scripts\set-low-priority.ps1')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\desktop-luminance.ps1') -Destination (Join-Path $packageRoot 'scripts\desktop-luminance.ps1')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\screen-metrics.ps1') -Destination (Join-Path $packageRoot 'scripts\screen-metrics.ps1')
-Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\set-click-through.ps1') -Destination (Join-Path $packageRoot 'scripts\set-click-through.ps1')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\snapshot-work.mjs') -Destination (Join-Path $packageRoot 'scripts\snapshot-work.mjs')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\hook-relay.ps1') -Destination (Join-Path $packageRoot 'scripts\hook-relay.ps1')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\relay\AIOfficeHookRelay.exe') -Destination (Join-Path $packageRoot 'scripts\relay\AIOfficeHookRelay.exe')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\click-through\AIOfficeClickThrough.exe') -Destination (Join-Path $packageRoot 'scripts\click-through\AIOfficeClickThrough.exe')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\install-app.ps1') -Destination (Join-Path $packageRoot 'Install-AI-Office-Dollhouse.ps1')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\uninstall-app.ps1') -Destination (Join-Path $packageRoot 'Uninstall-AI-Office-Dollhouse.ps1')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\Install-AI-Office-Dollhouse.cmd') -Destination (Join-Path $packageRoot 'Install-AI-Office-Dollhouse.cmd')
@@ -186,15 +196,15 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\RELEASE_CHECKLIST.md') -Des
 $portableNode = Copy-PortableNode (Join-Path $packageRoot 'runtime') $runtimeLock.portableNode
 
 $hashRows = Get-ChildItem -LiteralPath $packageRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
-    $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+    $hash = Get-Sha256 $_.FullName
     $relative = $_.FullName.Substring($packageRoot.Length + 1).Replace('\', '/')
-    "$($hash.Hash.ToLowerInvariant())  $relative"
+    "$hash  $relative"
 }
 [IO.File]::WriteAllLines((Join-Path $packageRoot 'SHA256SUMS.txt'), $hashRows, [Text.UTF8Encoding]::new($false))
 $manifestFiles = $hashRows.Count
 Compress-Archive -LiteralPath $packageRoot -DestinationPath $zipPath -CompressionLevel Optimal
 $zipManifestFiles = Assert-ReleaseZip $zipPath $packageName
-$zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$zipHash = Get-Sha256 $zipPath
 
 [pscustomobject]@{
     ok = $true

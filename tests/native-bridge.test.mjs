@@ -68,6 +68,28 @@ test('explicit startup show restores a bootstrap window without focusing it', as
   assert.deepEqual(calls, ['isMinimized', 'unminimize', 'show']);
 });
 
+test('native click-through guard resolves the object-shaped process ID and spawns once', async (t) => {
+  const calls = [];
+  const restore = withNativeRuntime({
+    app: { getProcessId: async () => ({ id: 321 }) },
+    filesystem: { getStats: async () => ({ isFile: true }) },
+    os: {
+      spawnProcess: async (value) => {
+        calls.push(value);
+        return { id: 7, pid: 9001 };
+      }
+    }
+  });
+  t.after(restore);
+
+  const bridge = new NativeBridge();
+  assert.equal(await bridge.startClickThroughGuard(), true);
+  assert.equal(await bridge.startClickThroughGuard(), true);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /AIOfficeClickThrough\.exe" --pid 321\b/);
+  assert.doesNotMatch(calls[0], /--pid 0\b/);
+});
+
 test('close exits even when stale-lock cleanup fails', async (t) => {
   let exited = 0;
   const restore = withNativeRuntime({ app: { exit: async () => { exited += 1; } } });
@@ -201,6 +223,59 @@ test('single-instance guard retains a live owner lock', async (t) => {
   bridge.instanceProcessId = 321;
 
   assert.equal(await bridge.acquireSingleInstance(), false);
+});
+
+test('a second launch signals the existing instance instead of showing a dead-end dialog', async (t) => {
+  const files = new Map();
+  let exited = 0;
+  let dialogs = 0;
+  const restore = withNativeRuntime({
+    init: () => {},
+    events: { on: () => {} },
+    filesystem: {
+      createDirectory: async () => {},
+      writeFile: async (path, data) => files.set(path, data)
+    },
+    os: {
+      getEnv: async () => 'C:\\local',
+      showMessageBox: async () => { dialogs += 1; }
+    },
+    app: {
+      getProcessId: async () => 321,
+      exit: async () => { exited += 1; }
+    }
+  });
+  t.after(restore);
+  const bridge = new NativeBridge();
+  bridge.acquireSingleInstance = async () => false;
+
+  assert.equal(await bridge.initialize(), false);
+  const request = JSON.parse(files.get('C:\\local\\AIOfficeDollhouse\\show-request.json'));
+  assert.equal(request.schemaVersion, 1);
+  assert.ok(Number.isFinite(request.requestedAt));
+  assert.equal(exited, 1);
+  assert.equal(dialogs, 0);
+});
+
+test('the owning instance consumes one local shortcut reveal request', async (t) => {
+  const requestPath = 'C:\\local\\AIOfficeDollhouse\\show-request.json';
+  const files = new Map([[requestPath, JSON.stringify({ schemaVersion: 1, requestedAt: Date.now() })]]);
+  const restore = withNativeRuntime({
+    filesystem: {
+      readFile: async (path) => {
+        if (!files.has(path)) throw new Error('missing');
+        return files.get(path);
+      },
+      remove: async (path) => files.delete(path)
+    }
+  });
+  t.after(restore);
+  const bridge = new NativeBridge();
+  bridge.showRequestFile = requestPath;
+
+  assert.equal(await bridge.consumeShowRequest(), true);
+  assert.equal(files.has(requestPath), false);
+  assert.equal(await bridge.consumeShowRequest(), false);
 });
 
 test('single-instance guard replaces a dead owner lock without a long restart delay', async (t) => {

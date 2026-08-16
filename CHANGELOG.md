@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.5 - 2026-08-17
+
+- 依專案人數動態配置第一層與獨立執行層，保留固定 Owner、四方會談室、執行層主管位與休息區。
+- 改為低干擾灰階線稿，只以胸口小色點辨識人物；畫面不再顯示專案、樓層或角色說明文字。
+- 完成人員、會談、休息與交件動線，並修正桌面捷徑喚回及動畫區原生滑鼠穿透。
+
 ## 0.3.4 - 2026-08-13
 
 - Prevent external readers from ever observing a partial shared-model JSON file by publishing only after the prior destination has been removed.

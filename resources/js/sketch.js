@@ -1,17 +1,21 @@
 // Architectural line-art renderer for the compact desktop overlay.
-// Geometry is original and code-drawn, with solid heads and restrained tonal furniture.
+// Geometry is original and code-drawn, with grayscale figures and restrained furniture.
 // Pure geometry/layout helpers are exported so tests can run them without a DOM.
 
 export const PLATE = Object.freeze({
-  gridWidth: 10,
+  // The approved rooms are shallow perspective floor plans, not the old diamond tile.
+  // The main office is 10 units wide; the last four units are the attached meeting/rest
+  // room that exists only over the middle/front depth of the floor.
+  gridWidth: 14,
+  mainWidth: 10,
   gridDepth: 10,
-  unit: 6.55,
+  unit: 9,
   storey: 3.2,
   thickness: 3,
-  logicalWidth: 136,
-  logicalHeight: 80,
-  centerX: 68,
-  top: 4
+  logicalWidth: 160,
+  logicalHeight: 100,
+  centerX: 58,
+  top: 9
 });
 
 // Transition timeline in milliseconds. Owner-approved: draw 0.8s, slide 0.4s, entry 0.3s.
@@ -32,21 +36,23 @@ export const TIMELINE = Object.freeze({
 // Frosted-paper grayscale: the plate always reads as a light gray sheet, like the
 // reference drawing, so the overlay stays legible on any wallpaper.
 const INK_TONE = Object.freeze({
-  plate: 'rgba(246, 244, 238, .82)',
-  slab: 'rgba(52, 46, 38, .22)',
-  faceTop: 'rgba(255, 255, 255, .92)',
-  faceLeft: 'rgba(52, 46, 38, .12)',
-  faceRight: 'rgba(52, 46, 38, .24)',
-  figure: 'rgba(255, 255, 255, .95)'
+  plate: 'rgba(246, 244, 238, .48)',
+  slab: 'rgba(52, 46, 38, .14)',
+  faceTop: 'rgba(255, 255, 255, .64)',
+  faceLeft: 'rgba(52, 46, 38, .09)',
+  faceRight: 'rgba(52, 46, 38, .16)',
+  figure: 'rgba(255, 255, 255, .68)'
 });
 
 const WHITE_TONE = Object.freeze({
-  plate: 'rgba(228, 231, 236, .76)',
-  slab: 'rgba(96, 104, 116, .55)',
-  faceTop: 'rgba(255, 255, 255, .88)',
-  faceLeft: 'rgba(70, 78, 90, .18)',
-  faceRight: 'rgba(70, 78, 90, .34)',
-  figure: 'rgba(255, 255, 255, .92)'
+  // Dark wallpapers use the accepted blueprint-like room: the desktop remains visible
+  // through a charcoal wash and the architecture is carried by pale graphite lines.
+  plate: 'rgba(28, 32, 37, .2)',
+  slab: 'rgba(8, 11, 14, .3)',
+  faceTop: 'rgba(226, 231, 235, .07)',
+  faceLeft: 'rgba(220, 226, 231, .035)',
+  faceRight: 'rgba(220, 226, 231, .065)',
+  figure: 'rgba(24, 28, 32, .2)'
 });
 
 export const THEMES = Object.freeze({
@@ -66,10 +72,10 @@ export const THEMES = Object.freeze({
   // white strokes would vanish against the gray wash the Owner asked for.
   white: Object.freeze({
     name: 'white',
-    stroke: '#4a5360',
-    soft: '#78828f',
-    guide: '#8c93a0',
-    text: '#3f4753',
+    stroke: '#c7ccd0',
+    soft: '#919aa2',
+    guide: '#727b84',
+    text: '#c7ccd0',
     working: '#2f7a58',
     waiting: '#a97c1f',
     error: '#a63f3f',
@@ -78,10 +84,7 @@ export const THEMES = Object.freeze({
   })
 });
 
-// Identity marks stay deliberately away from official brand colours (IP contract).
-// The four provider colours are held to one relative luminance band (.158-.174, a 1.10x
-// spread) so no team's floor tick reads as more important than another's; the previous
-// set spread 1.97x and made the ochre one shout.
+// Muted identity colours appear only as one tiny chest dot; all figure lines stay gray.
 export const IDENTITY = Object.freeze({
   owner: '#3e4a5c',
   codex: '#5174a0',
@@ -128,12 +131,20 @@ export function phaseAt(phase, elapsed) {
   return { plate, furniture, figures, crane, done: age >= TIMELINE.total };
 }
 
-/** 2:1 dimetric projection. gx/gy are floor grid units, gz is height in storey units. */
+/**
+ * Shallow architectural perspective. The previous 2:1 diamond made the approved office
+ * plan collapse into a sparse tile. Back/front edges now stay almost horizontal while the
+ * room widens gently toward the entrance, matching the accepted first/execution drawings.
+ */
 export function projector({ centerX = PLATE.centerX, top = PLATE.top, unit = PLATE.unit } = {}) {
-  return (gx, gy, gz = 0) => [
-    centerX + (gx - gy) * unit,
-    top + (gx + gy) * unit / 2 - gz * PLATE.storey
-  ];
+  return (gx, gy, gz = 0) => {
+    const depth = clamp(gy / PLATE.gridDepth);
+    const perspective = 1 + depth * .18;
+    return [
+      centerX + (gx - PLATE.mainWidth / 2) * unit * perspective,
+      top + gy * unit * .78 + gx * unit * .018 - gz * PLATE.storey
+    ];
+  };
 }
 
 /**
@@ -260,7 +271,12 @@ function openPlanOffice(room, pods, headquarters) {
  * Office layout for one plate: high furniture on the back walls, two desk banks in the
  * middle, and a clear front walkway to the stairs.
  */
-export function officeLayout(room, podCount = 1) {
+export function officeLayout(room, podCount = 1, options = null) {
+  if (options?.occupants) {
+    return room === 'owner'
+      ? firstFloorOffice(options.occupants, options)
+      : executionFloorOffice(options.occupants, options);
+  }
   const items = [];
   const seats = [];
   const pods = Math.max(1, Math.min(ISLANDS.length, Math.round(podCount) || 1));
@@ -312,6 +328,165 @@ export function officeLayout(room, podCount = 1) {
   return openPlanOffice(room, pods, room === 'all');
 }
 
+function addWorkstation(items, seats, { gx, gy, pod = 0, role = null, facing = -1, manager = false }) {
+  // The overlay is tiny, so a workstation has to remain a readable desk-monitor-chair
+  // group after the work floors shrink to 82%. These proportions match the accepted
+  // concept without borrowing space from the centre aisle.
+  items.push({ kind: 'desk', gx, gy: gy - .66, w: manager ? 2.35 : 2.08, d: .86, monitors: 1, partition: true, pod, manager });
+  items.push({ kind: 'chair', gx, gy: gy + .38, task: true, back: manager, facing });
+  seats.push({ gx, gy, pod, facing, role, desk: true });
+}
+
+/** Approved first floor: Owner front-left, three small-project slots, meeting annex right. */
+function firstFloorOffice(occupants, options) {
+  const items = [];
+  const seats = [];
+  const projectPeople = occupants.filter((person) => person.zone === 'base');
+  const meetingActive = occupants.some((person) => person.meeting);
+  const footprint = [[0, 0], [10, 0], [10, 1.8], [14, 1.8], [14, 9.35], [10, 9.35], [10, 10], [0, 10]];
+
+  // The accepted first-floor drawing is a real glass-outline room, not furniture on a
+  // naked slab. The front opening stays split so neither the Owner nor a project desk can
+  // sit in the doorway.
+  items.push({ kind: 'wall', x1: 0, y1: 0, x2: 10, y2: 0 });
+  items.push({ kind: 'wall', x1: 0, y1: 0, x2: 0, y2: 10 });
+
+  // Back-wall support strip, matching the approved first-floor mother image.
+  items.push({ kind: 'lockers', gx: .85, gy: .62, w: 1.45, d: .72, h: 1.72, doors: 3 });
+  items.push({ kind: 'cart', gx: 2.35, gy: .6 });
+  items.push({ kind: 'cabinet', gx: 3.65, gy: .58, w: 1.45, d: .7, h: 1.02, shelves: 2 });
+  items.push({ kind: 'cabinet', gx: 8.35, gy: .58, w: 1.75, d: .72, h: 1.08, shelves: 2 });
+  items.push({ kind: 'board', gx: 5.35, gy: .38, w: 1.55, h: 1.05 });
+  items.push({ kind: 'sofa', gx: 1.15, gy: 8.65, w: 1.95, d: .86, facing: 1 });
+  items.push({ kind: 'plant', gx: 3.05, gy: 8.65 });
+  // Two front openings keep the Owner desk out of the entrance path.
+  items.push({ kind: 'wall', x1: 0, y1: 9.82, x2: 4.35, y2: 9.82 });
+  items.push({ kind: 'wall', x1: 6.65, y1: 9.82, x2: 10, y2: 9.82 });
+
+  // Owner is deliberately left of the central entrance. With no small project downstairs
+  // the desk widens into the large-office arrangement, but never moves into the doorway.
+  const owner = projectPeople.length ? { gx: 2.15, gy: 7.05, w: 2.0 } : { gx: 2.35, gy: 6.65, w: 2.75 };
+  items.push({ kind: 'cubicle', gx: 2.0, gy: 6.65, w: 3.65, d: 2.85 });
+  items.push({ kind: 'desk', gx: owner.gx, gy: owner.gy - .72, w: owner.w, d: .72, monitors: 1, tray: true, manager: true });
+  items.push({ kind: 'chair', gx: owner.gx, gy: owner.gy + .38, task: true, back: true, facing: -1 });
+  items.push({ kind: 'cabinet', gx: 2.0, gy: 8.15, w: 2.55, d: .58, h: .78, shelves: 1 });
+  items.push({ kind: 'plant', gx: .55, gy: 7.9 });
+  seats.push({ gx: owner.gx, gy: owner.gy, pod: -1, facing: -1, role: 'owner', desk: true });
+  seats.push({ gx: 4.25, gy: 7.0, pod: -1, facing: 1, role: 'queue' });
+  seats.push({ gx: 4.25, gy: 8.0, pod: -1, facing: 1, role: 'queue' });
+
+  const slots = [
+    { shell: [2.25, 3.7, 3.75, 3.0], desks: [[2.65, 3.4], [1.15, 4.4]] },
+    { shell: [7.25, 6.65, 3.55, 2.8], desks: [[7.05, 6.4], [8.45, 7.28]] },
+    { shell: [7.15, 3.7, 3.6, 3.0], desks: [[7.0, 3.4], [8.42, 4.4]] }
+  ];
+  for (let slot = 0; slot < slots.length; slot += 1) {
+    const count = Math.min(2, projectPeople.filter((person) => person.podIndex === slot).length);
+    if (count > 0) {
+      const [gx, gy, w, d] = slots[slot].shell;
+      items.push({ kind: 'cubicle', gx, gy, w, d });
+      items.push({ kind: 'cabinet', gx, gy: gy + d / 2 - .22, w: w - .75, d: .48, h: .72, shelves: 1 });
+      items.push({ kind: 'plant', gx: gx - w / 2 + .35, gy: gy + d / 2 - .38 });
+    }
+    for (let index = 0; index < count; index += 1) {
+      const [gx, gy] = slots[slot].desks[index];
+      addWorkstation(items, seats, { gx, gy, pod: slot });
+    }
+  }
+
+  // The room and its four chairs are permanent. Idle furniture is faint, then returns to
+  // normal contrast only while a real 2/3/4-way discussion is active.
+  const roomAlpha = meetingActive ? 1 : .34;
+  items.push({ kind: 'wall', x1: 10, y1: 1.8, x2: 14, y2: 1.8, alpha: roomAlpha });
+  items.push({ kind: 'wall', x1: 14, y1: 1.8, x2: 14, y2: 9.35, alpha: roomAlpha });
+  items.push({ kind: 'wall', x1: 10, y1: 9.35, x2: 14, y2: 9.35, alpha: roomAlpha });
+  items.push({ kind: 'wall', x1: 10, y1: 1.8, x2: 10, y2: 9.35, door: [.73, .91], alpha: roomAlpha });
+  items.push({ kind: 'meeting', gx: 12.05, gy: 5.35, w: 2.25, d: 1.7, alpha: roomAlpha });
+  items.push({ kind: 'plant', gx: 13.45, gy: 2.45, alpha: roomAlpha });
+  items.push({ kind: 'plant', gx: 10.55, gy: 8.7, alpha: roomAlpha });
+  const meetingSeats = [[12.05, 3.55, 1], [12.05, 7.25, -1], [10.45, 5.35, 1], [13.55, 5.35, -1]];
+  for (const [gx, gy, facing] of meetingSeats) {
+    items.push({ kind: 'chair', gx, gy, facing, alpha: roomAlpha });
+    seats.push({ gx, gy, pod: 0, facing, role: 'meeting' });
+  }
+  return {
+    items,
+    seats,
+    manager: { gx: owner.gx, gy: owner.gy },
+    walkway: { gx: 5.55, gy: 9.15 },
+    footprint,
+    guidePoints: [[0, 0], [10, 0], [14, 9.35], [0, 10]],
+    figureScale: 1,
+    design: 'first-floor',
+    meetingActive,
+    options
+  };
+}
+
+/** Approved project floor: six staff desks forward, supervisor behind S3, rest room right. */
+function executionFloorOffice(occupants, options) {
+  const items = [];
+  const seats = [];
+  const supervisor = occupants.find((person) => person.supervisor);
+  const workers = occupants.filter((person) => !person.supervisor && !person.resting && !person.meeting).slice(0, 6);
+  const footprint = [[0, 0], [10, 0], [10, 1.8], [14, 1.8], [14, 9.35], [10, 9.35], [10, 10], [0, 10]];
+
+  // Execution floors keep the same glass-outline shell as the accepted concept. This is
+  // essential at overlay scale: without the two rear/side walls the room reads as a flat
+  // shelf and the right-hand rest area looks unrelated.
+  items.push({ kind: 'wall', x1: 0, y1: 0, x2: 10, y2: 0 });
+  items.push({ kind: 'wall', x1: 0, y1: 0, x2: 0, y2: 10 });
+
+  items.push({ kind: 'lockers', gx: .85, gy: .62, w: 1.4, d: .72, h: 1.68, doors: 3 });
+  items.push({ kind: 'cart', gx: 2.35, gy: .6 });
+  items.push({ kind: 'cabinet', gx: 8.15, gy: .58, w: 1.75, d: .72, h: 1.08, shelves: 2 });
+  items.push({ kind: 'board', gx: 5.2, gy: .38, w: 1.55, h: 1.05 });
+  items.push({ kind: 'wall', x1: 0, y1: 9.82, x2: 4.35, y2: 9.82 });
+  items.push({ kind: 'wall', x1: 6.65, y1: 9.82, x2: 10, y2: 9.82 });
+
+  // Fill by visible row, while preserving the two approved three-seat columns. A
+  // three-person team therefore uses both sides of the room instead of collapsing into
+  // one illegible vertical stack. The lower-left point remains the S3 anchor.
+  const staffSeats = [[2.7, 2.35], [6.85, 2.35], [2.7, 4.45], [6.85, 4.45], [2.7, 6.55], [6.85, 6.55]];
+  const s3Seat = staffSeats[4];
+  for (let index = 0; index < workers.length; index += 1) {
+    const [gx, gy] = staffSeats[index];
+    addWorkstation(items, seats, { gx, gy, pod: 0 });
+  }
+  if (supervisor) {
+    // Behind S3 and left of the central doorway, exactly as the approved mother image.
+    addWorkstation(items, seats, { gx: 1.35, gy: 8.65, pod: 0, role: 'manager', manager: true });
+  }
+
+  // Permanent grayscale rest zone. It is a waiting area, never another meeting room.
+  items.push({ kind: 'wall', x1: 10, y1: 1.8, x2: 14, y2: 1.8 });
+  items.push({ kind: 'wall', x1: 14, y1: 1.8, x2: 14, y2: 9.35 });
+  items.push({ kind: 'wall', x1: 10, y1: 9.35, x2: 14, y2: 9.35 });
+  items.push({ kind: 'wall', x1: 10, y1: 1.8, x2: 10, y2: 9.35, door: [.72, .91] });
+  items.push({ kind: 'cart', gx: 10.75, gy: 2.6 });
+  items.push({ kind: 'cabinet', gx: 12.8, gy: 2.55, w: 1.25, d: .72, h: 1.35, shelves: 2 });
+  items.push({ kind: 'meeting', gx: 11.35, gy: 5.75, w: 1.35, d: .95, low: true });
+  items.push({ kind: 'sofa', gx: 12.85, gy: 7.45, w: 1.75, d: .9, facing: 1 });
+  items.push({ kind: 'plant', gx: 13.45, gy: 8.75 });
+  const restSeats = [[10.65, 5.25, 1], [12.0, 6.25, -1], [11.2, 7.65, 1]];
+  for (const [gx, gy, facing] of restSeats) seats.push({ gx, gy, pod: 0, facing, role: 'rest' });
+
+  return {
+    items,
+    seats,
+    manager: { gx: 1.35, gy: 8.65 },
+    walkway: { gx: 5.55, gy: 9.15 },
+    staffSeats,
+    s3Seat,
+    restSeats,
+    footprint,
+    guidePoints: [[0, 0], [10, 0], [14, 9.35], [0, 10]],
+    figureScale: 1,
+    design: 'execution',
+    options
+  };
+}
+
 /** Assigns occupants to seats, keeping every SessionPod at its own island. */
 export function assignSeats(layout, occupants) {
   const pool = layout.seats.map((seat, index) => ({ seat, index, taken: false }));
@@ -319,7 +494,11 @@ export function assignSeats(layout, occupants) {
   return occupants.map((person, order) => {
     const podIndex = Number.isFinite(person.podIndex) ? person.podIndex : 0;
     let slot = null;
-    if (person.manager) slot = roleSeat('manager') || roleSeat('owner');
+    if (person.provider === 'owner') slot = roleSeat('owner');
+    if (!slot && person.meeting) slot = roleSeat('meeting');
+    if (!slot && person.resting) slot = roleSeat('rest');
+    if (!slot && person.supervisor) slot = roleSeat('manager');
+    if (!slot && person.manager) slot = roleSeat('manager') || roleSeat('owner');
     // Reception is a function, not a job: the counter stays empty until somebody is
     // actually hosting an Owner, a visitor or an approval.
     if (!slot && person.hosting) slot = roleSeat('reception');
@@ -468,15 +647,19 @@ function drawBox(ctx, project, gx, gy, w, d, h, options = {}) {
 // Plate, shell and vertical language.
 // ---------------------------------------------------------------------------
 
-export function drawPlate(ctx, project, theme, progress = 1) {
-  const { gridWidth: gw, gridDepth: gd, thickness } = PLATE;
-  const corners = [project(0, 0), project(gw, 0), project(gw, gd), project(0, gd)];
+export function drawPlate(ctx, project, theme, progress = 1, layout = null) {
+  const { mainWidth: mw, gridDepth: gd, thickness } = PLATE;
+  const footprint = layout?.footprint || [[0, 0], [mw, 0], [mw, gd], [0, gd]];
+  const corners = footprint.map(([gx, gy]) => project(gx, gy));
   const lowered = corners.map(([x, y]) => [x, y + thickness]);
 
   if (theme.tone && progress > .45) {
     const wash = clamp((progress - .45) / .55);
-    fillPoly(ctx, [corners[1], corners[2], lowered[2], lowered[1]], theme.tone.slab, wash);
-    fillPoly(ctx, [corners[2], corners[3], lowered[3], lowered[2]], theme.tone.slab, wash);
+    for (let index = 0; index < corners.length; index += 1) {
+      const next = (index + 1) % corners.length;
+      if (footprint[index][1] < footprint[next][1] && footprint[index][0] <= footprint[next][0]) continue;
+      fillPoly(ctx, [corners[index], corners[next], lowered[next], lowered[index]], theme.tone.slab, wash);
+    }
     fillPoly(ctx, corners, theme.tone.plate, wash);
   }
 
@@ -486,8 +669,8 @@ export function drawPlate(ctx, project, theme, progress = 1) {
   if (progress > .5) {
     const edgeProgress = clamp((progress - .5) / .5);
     // Slab thickness: the two front edges get a second line plus corner ticks.
-    strokePoly(ctx, [lowered[1], lowered[2], lowered[3]], { width: .7, progress: edgeProgress });
-    for (const index of [1, 2, 3]) {
+    strokePoly(ctx, lowered, { close: true, width: .7, progress: edgeProgress });
+    for (let index = 0; index < corners.length; index += 1) {
       strokeLine(ctx, corners[index], lowered[index], { width: .7, progress: edgeProgress });
     }
   }
@@ -496,20 +679,24 @@ export function drawPlate(ctx, project, theme, progress = 1) {
     const gridProgress = clamp((progress - .65) / .35);
     ctx.save();
     ctx.globalAlpha = .14 * gridProgress;
-    for (let step = 2; step < gw; step += 2) strokeLine(ctx, project(step, 0), project(step, gd), { width: .4 });
-    for (let step = 2; step < gd; step += 2) strokeLine(ctx, project(0, step), project(gw, step), { width: .4 });
+    for (let step = 2; step < mw; step += 2) strokeLine(ctx, project(step, 0), project(step, gd), { width: .4 });
+    for (let step = 2; step < gd; step += 2) {
+      strokeLine(ctx, project(0, step), project(mw, step), { width: .4 });
+      if (step <= 8) strokeLine(ctx, project(mw, step), project(PLATE.gridWidth, step), { width: .4 });
+    }
+    for (let step = 12; step < PLATE.gridWidth; step += 2) strokeLine(ctx, project(step, 1.8), project(step, 9.35), { width: .4 });
     ctx.restore();
   }
 }
 
-export function drawGuides(ctx, project, theme, height, progress = 1) {
-  const { gridWidth: gw, gridDepth: gd } = PLATE;
+export function drawGuides(ctx, project, theme, height, progress = 1, layout = null) {
+  const points = layout?.guidePoints || [[0, 0], [PLATE.mainWidth, 0], [PLATE.mainWidth, PLATE.gridDepth], [0, PLATE.gridDepth]];
   ctx.save();
   ctx.strokeStyle = theme.guide;
   ctx.globalAlpha = .55 * clamp(progress);
   ctx.setLineDash([2, 3]);
   ctx.lineWidth = .7;
-  for (const [gx, gy] of [[0, 0], [gw, 0], [gw, gd], [0, gd]]) {
+  for (const [gx, gy] of points) {
     const [x, y] = project(gx, gy);
     ctx.beginPath();
     ctx.moveTo(x, 0);
@@ -570,7 +757,7 @@ export function drawElevator(ctx, project, theme, height, { car = null, progress
   ctx.globalAlpha = clamp(progress);
   strokePoly(ctx, [[railX + 1, carY], [railX + 9, carY], [railX + 9, carY + 11], [railX + 1, carY + 11]], { close: true, width: .6 });
   strokeLine(ctx, [railX + 5, carY], [railX + 5, carY - 4], { width: .45, alpha: .7 });
-  if (car.occupied) dot(ctx, railX + 5, carY + 3, .7, car.color || theme.working);
+  if (car.occupied) dot(ctx, railX + 5, carY + 3, .7, theme.soft);
   ctx.restore();
 }
 
@@ -1012,11 +1199,8 @@ function drawPaper(ctx, project, gx, gy, progress, tray = false) {
 
 // ---------------------------------------------------------------------------
 // Figure A: the architect-scale line figure, 13px tall.
-// One drawing language only:
-// a solid head over a round-capped single-line skeleton. The old closed grey torso
-// and the chest identity dot are gone -- three competing syntaxes in a 13px body is
-// what made the figure ugly. Identity now sits on the floor under the feet (spec §3),
-// where it never distorts the anatomy and reads the same in every pose.
+// One drawing language only: grayscale, round-capped line anatomy with one tiny muted
+// identity dot at the chest. Nothing else on the person receives provider colour.
 // ---------------------------------------------------------------------------
 
 const FIGURE = Object.freeze({
@@ -1089,11 +1273,6 @@ export function drawFigure(ctx, x, baseline, theme, options = {}) {
   ctx.strokeStyle = theme.stroke;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-
-  // Identity lives on the floor, not on the body: a tick under the feet keeps every
-  // provider at the same visual weight and survives every pose unchanged (spec §3).
-  // Round caps add .7 to the drawn length, so the centre line is 2.3 for a 3.0 mark.
-  if (identity) strokeLine(ctx, [-1.15, 1.35], [1.15, 1.35], { width: .7, color: identity, alpha: .85 });
 
   // Legs swing about the hip, so a full stride lowers the whole body: no floating,
   // no rubber legs. Sitting drops the hip to seat height instead.
@@ -1184,7 +1363,7 @@ export function drawFigure(ctx, x, baseline, theme, options = {}) {
     ctx.restore();
   }
 
-  // Painter's order: far limbs, spine, near limbs, carried prop, then the solid head.
+  // Painter's order: far limbs, spine, near limbs, carried prop, chest dot, head outline.
   strokePoly(ctx, legs[0], { width: FIGURE.limbWidth });
   if (arms[0]) strokePoly(ctx, arms[0], { width: FIGURE.limbWidth });
   strokeLine(ctx, [neckX, neckY], [0, hipY], { width: FIGURE.spineWidth });
@@ -1194,55 +1373,13 @@ export function drawFigure(ctx, x, baseline, theme, options = {}) {
   if (prop) strokePoly(ctx, prop, { close: true, width: FIGURE.propWidth });
   strokePoly(ctx, arms[1], { width: FIGURE.limbWidth });
 
-  // The head is the only solid mass in the figure, which is what gives a 13px line
-  // skeleton a readable silhouette at overlay scale.
-  ctx.save();
-  ctx.fillStyle = theme.stroke;
-  ctx.beginPath();
-  ctx.arc(neckX + lean * .25, neckY - FIGURE.neckGap - FIGURE.headRadius, FIGURE.headRadius, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-  ctx.restore();
-}
-
-/** Small paper label with the "?" mark used by the Owner request cue. */
-/**
- * The request tag hangs to the figure's upper right, never straight up: directly above a
- * figure is where the person on the seat behind them is standing.
- */
-export function drawQuestionTag(ctx, x, y, theme, alpha = 1) {
-  const left = x + 3.4;
-  const top = y - 7.4;
-  ctx.save();
-  ctx.globalAlpha *= clamp(alpha);
-  ctx.strokeStyle = theme.waiting;
-  strokePoly(ctx, [
-    [left, top],
-    [left + 8, top],
-    [left + 8, top + 7.4],
-    [left + 2.6, top + 7.4],
-    [left + .4, top + 9.6],
-    [left + .9, top + 7.4],
-    [left, top + 7.4]
-  ], { close: true, width: .65 });
-  ctx.fillStyle = theme.waiting;
-  ctx.font = 'bold 5.6px "Microsoft JhengHei", system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText('?', left + 4, top + 5.6);
-  ctx.restore();
-}
-
-export function drawNamePlate(ctx, theme, text, statusColor, y, { alpha = 1, pulse = 1 } = {}) {
-  ctx.save();
-  ctx.globalAlpha *= clamp(alpha);
-  ctx.fillStyle = theme.text;
-  ctx.font = '7px "Microsoft JhengHei", system-ui, sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText(text, 3, y);
-  const width = ctx.measureText(text).width;
-  if (statusColor) dot(ctx, 3 + width + 4.5, y - 2.4, 2, statusColor, pulse);
+  if (identity) dot(ctx, neckX + .08, neckY + FIGURE.torso * .52, .58, identity, .82);
+  strokeEllipse(ctx,
+    neckX + lean * .25,
+    neckY - FIGURE.neckGap - FIGURE.headRadius,
+    FIGURE.headRadius,
+    FIGURE.headRadius,
+    { width: FIGURE.limbWidth, color: theme.stroke });
   ctx.restore();
 }
 
@@ -1252,9 +1389,9 @@ export function drawNamePlate(ctx, theme, text, statusColor, y, { alpha = 1, pul
 // ---------------------------------------------------------------------------
 
 export const PLAN = Object.freeze({
-  cellWidth: 11.6,
+  cellWidth: 9.5,
   cellHeight: 6.1,
-  left: 9,
+  left: 7,
   top: 8,
   wall: 2.2
 });
@@ -1479,22 +1616,10 @@ export function drawPlanStairs(ctx, project, theme, progress = 1) {
 }
 
 /** People in plan are the standard circle-with-shoulders symbol, not little bodies. */
-export function drawPlanFigure(ctx, x, y, theme, { identity = null, alpha = 1, facing = 1, tag = false } = {}) {
+export function drawPlanFigure(ctx, x, y, theme, { identity = null, alpha = 1, facing = 1 } = {}) {
   if (alpha <= 0) return;
   ctx.save();
   ctx.globalAlpha *= clamp(alpha);
-  // In plan the circle is the head seen from above, so identity tints the whole disc
-  // instead of sitting as a dot inside it: same rule as the axonometric figure, which
-  // keeps no badge inside a body.
-  if (identity || theme.tone) {
-    ctx.save();
-    ctx.globalAlpha *= identity ? .55 : 1;
-    ctx.fillStyle = identity || theme.tone.figure;
-    ctx.beginPath();
-    ctx.arc(x, y, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
   ctx.strokeStyle = theme.stroke;
   ctx.lineWidth = .6;
   ctx.beginPath();
@@ -1505,8 +1630,8 @@ export function drawPlanFigure(ctx, x, y, theme, { identity = null, alpha = 1, f
   ctx.arc(x, y + facing * 1.1, 3.4, facing > 0 ? Math.PI * .2 : Math.PI * 1.2, facing > 0 ? Math.PI * .8 : Math.PI * 1.8);
   ctx.lineWidth = .5;
   ctx.stroke();
+  if (identity) dot(ctx, x, y + facing * 2.25, .65, identity, .82);
   ctx.restore();
-  if (tag) drawQuestionTag(ctx, x + 1, y - 2, theme, alpha);
 }
 
 /** Hoist crane used while a new floor slides into place. */
@@ -1521,5 +1646,168 @@ export function drawCrane(ctx, project, theme, strength) {
   strokeLine(ctx, [hookX - 34, 2], [hookX + 4, 2], { width: .7 });
   strokeLine(ctx, [hookX, 2], [hookX, plateTop - 7], { width: .5 });
   strokePoly(ctx, [[hookX - 2.5, plateTop - 7], [hookX + 2.5, plateTop - 7], [hookX, plateTop - 3.5]], { close: true, width: .5 });
+  ctx.restore();
+}
+
+/** Nine physical construction beats, compressed into the approved 1.3s entrance. */
+export function drawConstructionScene(ctx, project, theme, elapsed, mode = 'full') {
+  const age = Math.max(0, Number(elapsed) || 0);
+  if (age >= TIMELINE.total || mode === 'dnd') return;
+  const low = mode === 'low' || mode === 'important';
+  const beat = age < 120 ? 'blueprint' : age < 220 ? 'engineers' : age < 320 ? 'elevator'
+    : age < 650 ? 'slab' : age < 820 ? 'connections' : age < 900 ? 'install'
+      : age < 1_000 ? 'tape-removal' : age < 1_110 ? 'ribbon' : 'occupancy';
+  ctx.recordAnimationCue?.('construction', beat, { elapsed: age });
+  ctx.save();
+  ctx.strokeStyle = theme.soft;
+  ctx.lineWidth = .55;
+
+  // 1. Blueprint and 2. striped warning tape (icons only, never explanatory text).
+  if (age < 760) {
+    const alpha = 1 - clamp((age - 560) / 200);
+    ctx.globalAlpha *= alpha;
+    const a = project(4.1, 8.55); const b = project(6.2, 8.55); const c = project(6.2, 9.35); const d = project(4.1, 9.35);
+    strokePoly(ctx, [a, b, c, d], { close: true, width: .55 });
+    strokeLine(ctx, project(4.4, 8.82), project(5.8, 8.82), { width: .4 });
+    const tapeA = project(.2, 9.65); const tapeB = project(9.8, 9.65);
+    strokeLine(ctx, tapeA, tapeB, { width: .65, alpha: .8 });
+    for (let index = 0; index < 9; index += 1) {
+      const local = (index + .35) / 9;
+      const x = tapeA[0] + (tapeB[0] - tapeA[0]) * local;
+      const y = tapeA[1] + (tapeB[1] - tapeA[1]) * local;
+      strokeLine(ctx, [x - 1.7, y + 1.1], [x + 1.7, y - 1.1], { width: .45, alpha: .8 });
+    }
+  }
+
+  // 3. Two engineers arrive together with the tool cart.
+  if (!low && age >= 120 && age < 920) {
+    const t = ease(clamp((age - 120) / 620));
+    const from = { gx: 8.8, gy: 9.2 }; const to = { gx: 3.1, gy: 8.75 };
+    const [x, y] = project(from.gx + (to.gx - from.gx) * t, from.gy + (to.gy - from.gy) * t);
+    drawFigure(ctx, x, y, theme, { pose: 'walk', swing: Math.sin(age / 70) * .55, facing: -1, identity: null, scale: .88 });
+    const [mateX, mateY] = project(from.gx + (to.gx - from.gx) * t + .75, from.gy + (to.gy - from.gy) * t - .35);
+    drawFigure(ctx, mateX, mateY, theme, { pose: 'walk', carry: true, swing: -Math.sin(age / 70) * .55, facing: -1, identity: null, scale: .82 });
+    drawBox(ctx, project, from.gx + (to.gx - from.gx) * t + .7, from.gy + (to.gy - from.gy) * t, .75, .52, .45, { progress: 1, width: .5, solid: false, tone: null });
+  }
+
+  // 4. Elevator rail, cable and three connection lights are installed.
+  if (age >= 220 && age < 1_080) {
+    const install = ease(clamp((age - 220) / 420));
+    const railTop = project(9.45, 1.15, 2.6); const railBottom = project(9.45, 1.15, 0);
+    const railTop2 = project(9.82, 1.15, 2.6); const railBottom2 = project(9.82, 1.15, 0);
+    strokeLine(ctx, railBottom, railTop, { width: .55, progress: install });
+    strokeLine(ctx, railBottom2, railTop2, { width: .55, progress: install });
+    strokeLine(ctx, [(railTop[0] + railTop2[0]) / 2, railTop[1] - 7], [(railBottom[0] + railBottom2[0]) / 2, railBottom[1]], { width: .42, progress: install });
+    for (let index = 0; index < 3; index += 1) {
+      const [lx, ly] = project(8.85 + index * .35, 1.15);
+      dot(ctx, lx, ly - 4, .58, theme.soft, clamp((age - 600 - index * 55) / 110));
+    }
+  }
+
+  // 5. The crane carries a visible prefab slab, rotates it once, then locks it in.
+  if (age >= 320 && age < 900) {
+    const t = ease(clamp((age - 320) / 580));
+    const cx = PLATE.centerX + 18 * (1 - t);
+    const cy = 10 + 24 * t;
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate((1 - t) * .08);
+    strokePoly(ctx, [[-15, -5], [15, -5], [15, 5], [-15, 5]], { close: true, width: .7, alpha: .82 });
+    strokeLine(ctx, [0, -13], [0, -5], { width: .5 }); ctx.restore();
+  }
+
+  // 6. Workstation/nameplate icons are installed, 7. warning tape is removed,
+  // 8. a ribbon is cut, and 9. occupants carry the first boxes inside.
+  if (!low && age >= 820) {
+    const pulse = .35 + Math.abs(Math.sin(age / 85)) * .55;
+    const [lx, ly] = project(9.2, 1.1);
+    dot(ctx, lx, ly - 4, .75, theme.soft, pulse);
+    if (age < 1_170) {
+      const install = ease(clamp((age - 820) / 250));
+      drawBox(ctx, project, 2.6, 3.2, 2.0, .75, .68, { progress: install, width: .5, solid: false, tone: null });
+      const [plateX, plateY] = project(4.6, 8.95, .8);
+      ctx.save(); ctx.globalAlpha *= install;
+      strokePoly(ctx, [[plateX - 3.2, plateY - 1.8], [plateX + 3.2, plateY - 1.8], [plateX + 3.2, plateY + 1.8], [plateX - 3.2, plateY + 1.8]], { close: true, width: .5 });
+      ctx.beginPath(); ctx.arc(plateX, plateY, .8, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+      const [flagX, flagY] = project(3.65, 8.9, .9);
+      ctx.beginPath(); ctx.moveTo(flagX, flagY + 3); ctx.lineTo(flagX, flagY - 7);
+      ctx.lineTo(flagX + 6, flagY - 4.6); ctx.lineTo(flagX, flagY - 2.2); ctx.stroke();
+    }
+    if (age >= 900 && age < 1_120) {
+      const remove = ease((age - 900) / 220);
+      const [tx, ty] = project(.2 + 9.6 * remove, 9.65);
+      const [ex, ey] = project(9.8, 9.65);
+      strokeLine(ctx, [tx, ty], [ex, ey], { width: .7, alpha: 1 - remove * .6 });
+      drawFigure(ctx, tx, ty, theme, { pose: 'walk', carry: true, swing: Math.sin(age / 65) * .5, facing: 1, identity: null, scale: .78 });
+    }
+    if (age >= 1_000 && age < 1_220) {
+      const [rx, ry] = project(5.1, 8.9);
+      strokeLine(ctx, [rx - 8, ry - 5], [rx + 8, ry - 5], { width: .65, alpha: .75 });
+      drawFigure(ctx, rx, ry, theme, { pose: 'raise', swing: 0, facing: -1, identity: null, scale: .88 });
+      ctx.beginPath(); ctx.arc(rx - 1.2, ry - 8, 1.2, 0, Math.PI * 2); ctx.arc(rx + 1.2, ry - 8, 1.2, 0, Math.PI * 2);
+      ctx.moveTo(rx - .5, ry - 7); ctx.lineTo(rx + 4.5, ry - 3.8); ctx.moveTo(rx + .5, ry - 7); ctx.lineTo(rx - 4.5, ry - 3.8); ctx.stroke();
+    }
+    if (age >= 1_110) {
+      for (let i = 0; i < 2; i += 1) {
+        const local = ease(clamp((age - 1_110 - i * 60) / 180));
+        const [x, y] = project(8.9 - local * (2 + i), 9.1 - local * 2.2);
+        drawFigure(ctx, x, y, theme, { pose: 'walk', carry: true, swing: Math.sin(age / 70 + i) * .5, facing: -1, identity: null, scale: .84 });
+      }
+    }
+  }
+  ctx.restore();
+}
+
+/** Final 600ms physical closure: pack, lights out, remove icon, archive, retract. */
+export function drawArchiveClosure(ctx, project, theme, elapsed) {
+  const t = clamp((Number(elapsed) || 0) / TIMELINE.leaving);
+  if (t <= 0 || t >= 1) return;
+  ctx.recordAnimationCue?.('archive', t < .35 ? 'pack' : t < .6 ? 'lights-out' : t < .82 ? 'remove-icon' : 'seal', { progress: t });
+  const [x, y] = project(5, 5);
+  ctx.save();
+  ctx.strokeStyle = theme.soft;
+  ctx.globalAlpha *= Math.sin(t * Math.PI);
+  ctx.lineWidth = .65;
+  // A worker packs the last box, crosses the floor and boards the elevator.
+  if (t < .68) {
+    const from = project(3.1, 5.4); const door = project(5.55, 9.15); const lift = project(9.45, 2.0);
+    const local = ease(clamp(t / .62));
+    const split = local < .58 ? ease(local / .58) : ease((local - .58) / .42);
+    const a = local < .58 ? from : door; const b = local < .58 ? door : lift;
+    drawFigure(ctx, a[0] + (b[0] - a[0]) * split, a[1] + (b[1] - a[1]) * split, theme, {
+      pose: split < .94 ? 'walk' : 'stand', carry: true, swing: Math.sin(t * Math.PI * 14) * .5,
+      facing: local < .58 ? 1 : -1, identity: null, scale: .82, alpha: 1 - clamp((t - .58) / .1)
+    });
+  }
+  // An engineer follows in, operates the lights and removes the door icon.
+  if (t >= .28 && t < .82) {
+    const engineerLocal = ease(clamp((t - .28) / .34));
+    const lift = project(9.45, 2.0); const panel = project(5.55, 9.35);
+    drawFigure(ctx, lift[0] + (panel[0] - lift[0]) * engineerLocal, lift[1] + (panel[1] - lift[1]) * engineerLocal, theme, {
+      pose: engineerLocal < .9 ? 'walk' : 'raise', swing: Math.sin(t * Math.PI * 16) * .5,
+      facing: -1, identity: null, scale: .76, alpha: 1 - clamp((t - .72) / .1)
+    });
+  }
+  // Three ceiling lamps switch off in sequence.
+  for (let index = 0; index < 3; index += 1) {
+    const off = clamp((t - .18 - index * .1) / .18);
+    const [lx, ly] = project(3.2 + index * 1.8, 2.0, 2.2);
+    ctx.save(); ctx.globalAlpha *= 1 - off * .8;
+    ctx.beginPath(); ctx.arc(lx, ly, 1.6, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+  }
+  // The door icon is physically lifted off its mount.
+  if (t > .35 && t < .82) {
+    const lift = ease((t - .35) / .47);
+    const [px, py] = project(5.55, 9.35, .9);
+    ctx.save(); ctx.translate(0, -lift * 8); ctx.globalAlpha *= 1 - lift;
+    strokePoly(ctx, [[px - 3, py - 2], [px + 3, py - 2], [px + 3, py + 2], [px - 3, py + 2]], { close: true, width: .5 });
+    ctx.restore();
+  }
+  // Archive card closes, then physically slides into the back-left filing cabinet.
+  const scale = .45 + t * .55;
+  const cabinet = project(.9, .65, .8);
+  const fileTrip = ease(clamp((t - .68) / .3));
+  ctx.translate(x + (cabinet[0] - x) * fileTrip, y - 8 + (cabinet[1] - (y - 8)) * fileTrip); ctx.scale(scale, scale);
+  strokePoly(ctx, [[-8, -5], [8, -5], [8, 5], [-8, 5]], { close: true, width: .65 });
+  strokeLine(ctx, [-5, -1], [5, -1], { width: .45 });
+  strokeLine(ctx, [-5, 2], [2, 2], { width: .45 });
   ctx.restore();
 }

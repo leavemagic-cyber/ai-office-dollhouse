@@ -40,9 +40,10 @@ assert.equal(config.nativeAllowList.includes('net.*'), false);
 assert.equal(packageJson.private, true);
 assert.equal(packageJson.license, 'MIT');
 assert.equal(existsSync(join(root, 'scripts', 'relay', 'AIOfficeHookRelay.exe')), true, 'compiled relay missing');
+assert.equal(existsSync(join(root, 'scripts', 'click-through', 'AIOfficeClickThrough.exe')), true, 'compiled click-through guard missing');
 
 // Every PowerShell helper the runtime calls has to be in the release package, or the
-// installed build loses that feature silently. set-click-through.ps1 shipped broken once.
+// installed build loses that feature silently.
 const runtimeSources = files.filter((item) => item.includes(`${join(root, 'resources', 'js')}\\`) && item.endsWith('.js'));
 const packageScript = readFileSync(join(root, 'scripts', 'package-release.ps1'), 'utf8');
 for (const path of runtimeSources) {

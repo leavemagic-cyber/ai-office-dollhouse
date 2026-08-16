@@ -1,6 +1,9 @@
 import { cueAppearsOnFloor, globalChoreography } from './choreography.js';
 import {
+  activeDiscussionProviders,
+  baseFloorSessions,
   FLOOR_WORKSTATIONS,
+  orderedDiscussionProviders,
   sessionsForProvider,
   SHARED_FLOOR_KEY,
   sharedFloorSessions,
@@ -10,13 +13,13 @@ import {
   assignSeats,
   clamp,
   drawCrane,
+  drawConstructionScene,
+  drawArchiveClosure,
   drawElevator,
   drawFigure,
   drawGuides,
-  drawNamePlate,
   drawOfficeItem,
   drawPlate,
-  drawQuestionTag,
   drawStairs,
   ease,
   IDENTITY,
@@ -53,17 +56,6 @@ export const SINGLE_FLOOR_KEY = 'all';
 // A compact work floor holds workers only. Owner permanently lives on the separate,
 // larger decision floor and is never merged into this capacity.
 export const SINGLE_FLOOR_CAPACITY = 6;
-
-const PLATE_LABELS = Object.freeze({
-  all: 'AI OFFICE',
-  shared: '共用辦公層',
-  owner: 'OWNER・決策',
-  codex: 'CODEX・工事',
-  claude: 'CLAUDE・審閱',
-  gemini: 'GEMINI・諮詢',
-  grok: 'GROK・探索',
-  lobby: 'LOBBY・大廳'
-});
 
 const TEAM_ROOMS = ['codex', 'claude', 'gemini', 'grok'];
 
@@ -133,72 +125,129 @@ export function totalOccupants(model) {
  * the summarised overflow. `podIndex` is the work island they belong to, so a session fills
  * one three-seat bank completely before the next one opens.
  */
-function occupantsForSession(room, model, session) {
-  const occupants = [];
-  if (session.source === 'live') {
-    const pod = (model?.providers?.[room]?.livePods || [])[session.index];
-    if (!pod) return [];
-    const agents = pod.agents || [];
-    const isManager = agents.length > 1;
-    // Upstream does not always flag a main agent. When none is flagged the first agent is
-    // the main worker, or a one-agent pod would be drawn as two people.
-    const helpers = agents.some((agent) => agent?.isMain) ? agents.filter((agent) => !agent?.isMain) : agents.slice(1);
-    // A pod whose main worker is away is drawn on the floor they walked to, not here.
-    const mainAway = pod.activity === 'waiting_owner' || pod.activity === 'discussing';
-    occupants.push({
-      id: `${pod.id}:main`,
-      label: pod.label,
+function providerForAgent(agent, fallback) {
+  const role = String(agent?.role || '').toLowerCase();
+  if (role.includes('claude')) return 'claude';
+  if (role.includes('gemini')) return 'gemini';
+  if (role.includes('grok')) return 'grok';
+  if (role.includes('codex')) return 'codex';
+  return fallback;
+}
+
+function occupantsForSession(room, model, session, { location = 'execution' } = {}) {
+  if (session?.source !== 'live') return [];
+  const pod = (model?.providers?.[room]?.livePods || [])[session.index];
+  if (!pod) return [];
+  const sourceAgents = pod.agents || [];
+  const mainAgent = sourceAgents.find((agent) => agent?.isMain) || sourceAgents[0] || {
+    id: `main:${pod.id}`, isMain: true, role: 'main AI', activity: pod.activity
+  };
+  const activeAgents = sourceAgents.some((agent) => agent?.isMain)
+    ? sourceAgents
+    : [mainAgent, ...sourceAgents.slice(1)];
+  const supervisorAgent = activeAgents.find((agent) => agent.id === pod.actingLeadAgentId) || mainAgent;
+  const sessionId = pod.id;
+  const common = {
+    label: pod.label,
+    sessionId,
+    snapshot: false,
+    idleFrom: pod.idleFrom || null,
+    idleSinceAt: Number(pod.idleSinceAt) || null,
+    deliveredCount: Math.max(0, Number(pod.deliveredCount) || 0),
+    workVisual: pod.workVisual || null,
+    discussionVisual: pod.discussionVisual || null,
+    closingUntil: Number(pod.closingUntil) || null
+  };
+  const personFor = (agent, index, extra = {}) => {
+    const isMain = agent === mainAgent || Boolean(agent?.isMain);
+    const supervisor = location === 'execution' && agent === supervisorAgent;
+    return {
+      ...common,
+      id: isMain ? `${pod.id}:main` : agent.id,
+      rawAgentId: agent.id,
+      provider: providerForAgent(agent, room),
+      workVisual: isMain ? pod.workVisual || null : null,
+      activity: ['unknown', 'idle', 'completed'].includes(pod.activity)
+        ? pod.activity
+        : (isMain && pod.activity === 'running' ? 'working' : agent.activity || 'working'),
+      manager: location === 'base' && isMain,
+      supervisor,
+      hidden: (supervisor || (location === 'base' && isMain)) && pod.activity === 'waiting_owner',
+      actionStyle: [2, 0, 1, 3, 2][index % 5],
+      podIndex: location === 'base' ? session.baseSlot : 0,
+      zone: location,
+      ...extra
+    };
+  };
+
+  if (location === 'base') {
+    const working = activeAgents.map((agent, index) => personFor(agent, index));
+    const finished = (pod.restingAgents || []).map((agent, index) => personFor(agent, working.length + index, {
+      id: agent.id,
+      activity: 'idle',
+      manager: false,
+      supervisor: false,
+      finishedAt: Number(agent.finishedAt) || 0
+    }));
+    return [...working, ...finished].slice(0, 2);
+  }
+
+  const supervisor = personFor(supervisorAgent, 0, { supervisor: true, manager: true });
+  const workers = activeAgents
+    .filter((agent) => agent !== supervisorAgent)
+    .map((agent, index) => personFor(agent, index + 1, { supervisor: false, manager: false }));
+  for (let index = 0; index < Math.max(0, Number(pod.overflowAgentCount) || 0); index += 1) {
+    workers.push({
+      ...common,
+      id: `${pod.id}:overflow:${index}`,
       provider: room,
       activity: pod.activity === 'running' ? 'working' : pod.activity,
-      manager: isManager,
-      snapshot: false,
-      actionStyle: isManager ? 4 : 2,
-      idleFrom: pod.idleFrom || null,
-      idleSinceAt: Number(pod.idleSinceAt) || null,
-      deliveredCount: Math.max(0, Number(pod.deliveredCount) || 0),
-      hidden: mainAway
+      supervisor: false,
+      manager: false,
+      aggregated: true,
+      actionStyle: [0, 1, 3, 2][index % 4],
+      podIndex: 0,
+      zone: 'execution'
     });
-    for (const [index, agent] of helpers.entries()) {
-      occupants.push({
-        id: agent.id,
-        label: agent.role || 'subagent',
-        provider: room,
-        // Pod certainty dominates child decoration. A disconnected pod cannot leave
-        // helpers walking or typing from their last pre-disconnect activity.
-        activity: ['unknown', 'idle', 'completed'].includes(pod.activity) ? pod.activity : (agent.activity || 'working'),
-        manager: false,
-        snapshot: false,
-        actionStyle: [0, 1, 3, 2, 0][index % 5],
-        idleFrom: pod.idleFrom || null,
-        idleSinceAt: Number(pod.idleSinceAt) || null,
-        deliveredCount: Math.max(0, Number(pod.deliveredCount) || 0)
-      });
-    }
-    for (let index = 0; index < Math.max(0, pod.overflowAgentCount || 0); index += 1) {
-      occupants.push({
-        id: `${pod.id}:overflow:${index}`,
-        label: '更多 subagent',
-        provider: room,
-        activity: pod.activity === 'running' ? 'working' : pod.activity,
-        manager: false,
-        snapshot: false,
-        aggregated: true,
-        actionStyle: [0, 1, 3, 2][index % 4],
-        idleFrom: pod.idleFrom || null,
-        idleSinceAt: Number(pod.idleSinceAt) || null,
-        deliveredCount: Math.max(0, Number(pod.deliveredCount) || 0)
-      });
-    }
-  } else return [];
-  return occupants
-    .slice(0, FLOOR_WORKSTATIONS)
-    .map((person, order) => ({ ...person, podIndex: Math.floor(order / SEATS_PER_ISLAND) }));
+  }
+
+  const resting = (pod.restingAgents || []).map((agent, index) => ({
+    ...common,
+    id: `rest:${agent.id}`,
+    provider: providerForAgent(agent, room),
+    activity: 'resting',
+    resting: true,
+    finishedAt: Number(agent.finishedAt) || 0,
+    restOriginIndex: Number.isInteger(agent.seatOrdinal) ? agent.seatOrdinal % FLOOR_WORKSTATIONS : index % FLOOR_WORKSTATIONS,
+    actionStyle: index,
+    podIndex: 0,
+    zone: 'rest'
+  }));
+  for (let index = 0; index < Math.max(0, Number(pod.restingOverflowCount) || 0); index += 1) {
+    resting.push({
+      ...common,
+      id: `${pod.id}:rest-overflow:${index}`,
+      provider: room,
+      activity: 'resting',
+      resting: true,
+      finishedAt: Number(pod.restingOverflowAt) || Number(model?.generatedAt) || Date.now(),
+      restOriginIndex: index % FLOOR_WORKSTATIONS,
+      actionStyle: index + 2,
+      podIndex: 0,
+      zone: 'rest'
+    });
+  }
+  return [supervisor, ...workers.slice(0, FLOOR_WORKSTATIONS), ...resting.slice(0, 3)];
 }
 
 /** Every session of one provider, used by the single-floor view and the headcount. */
 function allOccupantsForProvider(room, model) {
   if (!TEAM_ROOMS.includes(room)) return [];
-  return sessionsForProvider(model?.providers?.[room]).flatMap((session) => occupantsForSession(room, model, session));
+  return sessionsForProvider(model?.providers?.[room])
+    .filter((session) => session.source === 'live')
+    .flatMap((session) => occupantsForSession(room, model, session, {
+      location: session.floorAssignment === 'base' ? 'base' : 'execution'
+    }));
 }
 
 /**
@@ -217,7 +266,10 @@ export function occupantsFromModel(room, model, annexIndex = 0) {
   if (room === SINGLE_FLOOR_KEY) return singleFloorOccupants(model);
   if (room === SHARED_FLOOR_KEY) return sharedFloorOccupants(model);
   if (room === 'owner') {
-    const occupants = [{ id: 'owner', label: 'Owner', provider: 'owner', activity: 'idle', manager: true, snapshot: false, actionStyle: 1, podIndex: 0 }];
+    const occupants = [{ id: 'owner', label: 'Owner', provider: 'owner', activity: 'idle', manager: true, snapshot: false, actionStyle: 1, podIndex: -1 }];
+    for (const session of baseFloorSessions(model)) {
+      occupants.push(...occupantsForSession(session.provider, model, session, { location: 'base' }));
+    }
     const visitors = Object.entries(model?.providers || {}).flatMap(([provider, team]) =>
       (team.livePods || []).filter((pod) => pod.activity === 'waiting_owner').map((pod) => ({ provider, pod }))
     );
@@ -230,7 +282,21 @@ export function occupantsFromModel(room, model, annexIndex = 0) {
         manager: false,
         snapshot: false,
         actionStyle: 3,
-        podIndex: 0
+        podIndex: -1,
+        waitingVisitor: true
+      });
+    }
+    for (const [index, provider] of activeDiscussionProviders(model).entries()) {
+      occupants.push({
+        id: `discussion:${provider}:${index}`,
+        label: provider,
+        provider,
+        activity: 'discussing',
+        manager: false,
+        meeting: true,
+        snapshot: false,
+        podIndex: -1,
+        actionStyle: index
       });
     }
     return occupants;
@@ -255,7 +321,7 @@ export function occupantsFromModel(room, model, annexIndex = 0) {
   if (!TEAM_ROOMS.includes(room)) return [];
   // A provider floor is one subagent team, so it only ever shows that session's people.
   const session = teamSessions(model, room)[annexIndex];
-  return session ? occupantsForSession(room, model, session) : [];
+  return session ? occupantsForSession(room, model, session, { location: 'execution' }) : [];
 }
 
 function podCountFor(room, model, occupants) {
@@ -324,7 +390,10 @@ export function completionStage(progress) {
 export const TURN_SETTLE_MS = 1_500;
 export const P4_SLOT_MS = 30_000;
 export const P4_ACTION_MS = 10_000;
-const P4_ACTIONS = Object.freeze(['daze', 'drink', 'read', 'water']);
+export const P4_ACTIONS = Object.freeze([
+  'daze', 'drink', 'read', 'water', 'blanket', 'pet', 'robot',
+  'elevator_wait', 'stickers', 'photo'
+]);
 let p4Schedule = { slot: null, ownerId: null, action: null, cancelled: false };
 
 /**
@@ -339,11 +408,18 @@ export function idleCueForModel(model, personId, now = Date.now()) {
   const slotStartedAt = slot * P4_SLOT_MS;
   const elapsed = Math.max(0, Number(now) || 0) - slotStartedAt;
   const candidates = TEAM_ROOMS.flatMap((provider) => (
-    (model?.providers?.[provider]?.livePods || [])
-      .filter((pod) => pod.activity === 'idle'
+    (model?.providers?.[provider]?.livePods || []).flatMap((pod) => {
+      const ids = [];
+      if (pod.activity === 'idle'
         && pod.idleFrom === 'turn_completed'
-        && Number(pod.idleSinceAt) + TURN_SETTLE_MS <= slotStartedAt)
-      .map((pod) => `${pod.id}:main`)
+        && Number(pod.idleSinceAt) + TURN_SETTLE_MS <= slotStartedAt) ids.push(`${pod.id}:main`);
+      if (pod.floorAssignment === 'base') {
+        for (const worker of pod.restingAgents || []) {
+          if (Number(worker.finishedAt || 0) + TURN_SETTLE_MS <= slotStartedAt) ids.push(String(worker.id));
+        }
+      }
+      return ids;
+    })
   )).sort();
   if (p4Schedule.slot !== slot) {
     p4Schedule = {
@@ -376,6 +452,7 @@ export function isCueMainPerson(person, event) {
   const provider = String(event?.provider || '');
   const sessionId = String(event?.sessionId || '');
   if (!provider || !sessionId) return false;
+  if (person?.supervisor && String(person?.sessionId || '').endsWith(`:${sessionId}`)) return true;
   return String(person?.id || '') === `pod:${provider}:${sessionId}:main`;
 }
 
@@ -396,8 +473,34 @@ export function deliveryHomeForCue(room, model, annexIndex, layout, event) {
  * the return desk, so the courier and that worker overlap on the final leg.
  */
 export function deliveryPlacementsForCue(layout, occupants, event) {
-  return assignSeats(layout, occupants)
-    .filter((entry) => !entry.person.hidden && !isCueMainPerson(entry.person, event));
+  const assigned = assignSeats(layout, occupants);
+  const courier = layout?.design === 'execution'
+    ? assigned.find((entry) => !entry.person.hidden && !entry.person.supervisor && !entry.person.resting)
+    : null;
+  return assigned.filter((entry) => (
+    !entry.person.hidden
+    && !isCueMainPerson(entry.person, event)
+    && (!courier || entry.person.id !== courier.person.id)
+  ));
+}
+
+function deliveryCourierHomeForCue(layout, occupants) {
+  if (layout?.design !== 'execution') return null;
+  const courier = assignSeats(layout, occupants)
+    .find((entry) => !entry.person.hidden && !entry.person.supervisor && !entry.person.resting);
+  return courier ? { gx: courier.gx, gy: courier.gy, facing: courier.facing } : null;
+}
+
+function supervisorForEvent(model, event) {
+  const provider = String(event?.provider || '');
+  const sessionId = String(event?.sessionId || '');
+  if (!TEAM_ROOMS.includes(provider) || !sessionId) return null;
+  const session = sessionsForProvider(model?.providers?.[provider])
+    .find((candidate) => String(candidate.id || '').endsWith(`:${sessionId}`) || String(candidate.id || '') === sessionId);
+  if (!session || session.source !== 'live') return null;
+  const location = session.floorAssignment === 'base' ? 'base' : 'execution';
+  return occupantsForSession(provider, model, session, { location })
+    .find((person) => person.supervisor || person.manager) || null;
 }
 
 export function deliveryReturnFacing(home, localProgress) {
@@ -430,6 +533,30 @@ function workerIdlePose(seat, placement, options) {
   if (action === 'read') {
     return { ...seat, pose: 'sit', swing: 0, lean: .25 + wave * .12, facing: placement.facing, alpha: 1, idleAction: 'read', idleProgress: idleCue.progress };
   }
+  if (['blanket', 'pet', 'robot', 'elevator_wait', 'stickers', 'photo'].includes(action)) {
+    const deskSeats = (layout.seats || []).filter((candidate) => candidate.desk
+      && (Math.abs(candidate.gx - seat.gx) > .1 || Math.abs(candidate.gy - seat.gy) > .1));
+    const coworker = deskSeats[0] || { gx: seat.gx + 1.4, gy: seat.gy - .5 };
+    const annexCart = (layout.items || []).find((item) => item.kind === 'cart' && item.gx > 9)
+      || (layout.items || []).find((item) => item.kind === 'cart');
+    const targets = {
+      blanket: { gx: coworker.gx + .7, gy: coworker.gy },
+      robot: { gx: coworker.gx + .7, gy: coworker.gy },
+      pet: { gx: 5.1, gy: 5.25 },
+      elevator_wait: { gx: 9.45, gy: 2.0 },
+      stickers: annexCart ? { gx: annexCart.gx + .7, gy: annexCart.gy + .8 } : { gx: 4.4, gy: 8.3 },
+      photo: { gx: 5.25, gy: 5.7 }
+    };
+    const travel = travelPose(seat, targets[action], idleCue.progress);
+    const performing = travel.pose === 'stand' && idleCue.progress >= .38 && idleCue.progress < .6;
+    return {
+      ...travel,
+      facing: travel.facing || placement.facing,
+      alpha: 1,
+      idleAction: performing ? action : null,
+      idleProgress: idleCue.progress
+    };
+  }
   return { ...seat, pose: 'sit', swing: 0, lean: -.7 + wave * .08, facing: placement.facing, alpha: 1, idleAction: 'daze', idleProgress: idleCue.progress };
 }
 
@@ -453,10 +580,41 @@ export function poseFor(placement, options) {
     };
   }
 
+  if (person.resting) {
+    const originPair = layout.staffSeats?.[person.restOriginIndex] || [seat.gx, seat.gy];
+    const origin = { gx: originPair[0], gy: originPair[1] };
+    const age = person.finishedAt ? Math.max(0, Number(options.now) - person.finishedAt) : 5_000;
+    const progress = clamp(age / 4_000);
+    if (!still && progress < 1) {
+      if (progress < .14) return { ...origin, pose: 'stand', swing: 0, facing: placement.facing, alpha: 1 };
+      const local = ease((progress - .14) / .86);
+      const outbound = (seat.gx - seat.gy) - (origin.gx - origin.gy) >= 0 ? 1 : -1;
+      return {
+        gx: origin.gx + (seat.gx - origin.gx) * local,
+        gy: origin.gy + (seat.gy - origin.gy) * local,
+        pose: local < .9 ? 'walk' : 'sit',
+        swing: Math.sin(progress * Math.PI * 12) * .55,
+        facing: local < .9 ? outbound : placement.facing,
+        alpha: 1
+      };
+    }
+    const restAction = ['read', 'drink', 'daze'][person.actionStyle % 3];
+    return {
+      ...seat,
+      pose: restAction === 'drink' ? 'drink' : 'sit',
+      swing: still ? 0 : Math.sin(time / 850 + person.actionStyle) * .18,
+      lean: restAction === 'daze' ? -.6 : .2,
+      facing: placement.facing,
+      alpha: 1,
+      idleAction: restAction,
+      idleProgress: (time % 4_000) / 4_000
+    };
+  }
+
   // Owner receives requests while seated; the requester is the visitor who raises or
   // knocks. The old branch made Owner raise a hand at their own desk.
   if (activity === 'waiting_owner' && person.provider !== 'owner') {
-    return { ...seat, pose: 'raise', swing: 0, facing: placement.facing, tag: true, alpha: 1 };
+    return { ...seat, pose: 'raise', swing: 0, facing: placement.facing, alpha: 1 };
   }
   if (activity === 'failed') {
     const shake = still ? 0 : Math.sin(time / 90) * .5;
@@ -475,17 +633,55 @@ export function poseFor(placement, options) {
   const seated = placement.desk === true || ['seat', 'desk', 'owner', 'meet'].includes(placement.role);
   const cycle = mode === 'full' ? 2_400 : 4_200;
   const local = still ? 0 : ((time + (placement.order || 0) * 430) % cycle) / cycle;
+  const workAction = person.workVisual || null;
+  const workTarget = !still ? workTargetFor(layout, workAction) : null;
+  if (workTarget) {
+    const travel = travelPose(seat, workTarget, local);
+    const performing = travel.pose === 'stand' && local >= .38 && local < .6;
+    return { ...travel, facing: travel.facing || placement.facing, alpha: 1, workAction: performing ? workAction : null, workProgress: local };
+  }
   return {
     ...seat,
-    pose: seated ? 'type' : 'stand',
+    pose: workAction === 'external_wait'
+      ? 'sit' : workAction === 'crash' ? 'stand' : seated ? 'type' : 'stand',
     swing: still ? 0 : Math.sin(local * Math.PI * 2) * .8,
     facing: placement.facing,
-    alpha: 1
+    alpha: 1,
+    workAction,
+    workProgress: local
   };
+}
+
+/** Physical destination for a structured work fact. Null means truthful generic desk work. */
+export function workTargetFor(layout, action) {
+  if (!action) return null;
+  const cabinet = layout?.items?.find((item) => item.kind === 'cabinet');
+  const lockers = layout?.items?.find((item) => item.kind === 'lockers');
+  const cart = layout?.items?.find((item) => item.kind === 'cart');
+  const board = layout?.items?.find((item) => item.kind === 'board');
+  const manager = layout?.manager;
+  if (action === 'research' && cabinet) return { gx: cabinet.gx, gy: cabinet.gy + .9 };
+  if (action === 'review' && manager) return { gx: manager.gx + 1.05, gy: manager.gy - .25 };
+  if (action === 'search') return { gx: board?.gx || 5.2, gy: (board?.gy || .4) + 1.1 };
+  if (action === 'test') return { gx: 5.15, gy: 5.35 };
+  if (action === 'git' || action === 'merge_conflict') return { gx: 5.15, gy: 5.35 };
+  if (action === 'build' && cart) return { gx: cart.gx + .8, gy: cart.gy + .85 };
+  if (action === 'document' && cart) return { gx: cart.gx + .75, gy: cart.gy + .75 };
+  if (action === 'context' && (lockers || cabinet)) {
+    const shelf = lockers || cabinet;
+    return { gx: shelf.gx, gy: shelf.gy + .95 };
+  }
+  if (action === 'rate_limit') {
+    const rest = layout?.restSeats?.[0];
+    return rest ? { gx: rest[0], gy: rest[1] } : { gx: 4.7, gy: 8.4 };
+  }
+  if (action === 'whiteboard') return { gx: board?.gx || 5.2, gy: (board?.gy || .4) + .9 };
+  return null;
 }
 
 function drawOwnerIdleProp(ctx, x, y, theme, action) {
   if (!action) return;
+  ctx.recordAnimationCue?.('owner-idle', action, { x, y });
   ctx.save();
   ctx.strokeStyle = theme.stroke;
   ctx.fillStyle = theme.text;
@@ -504,16 +700,17 @@ function drawOwnerIdleProp(ctx, x, y, theme, action) {
     ctx.lineTo(x + 6.5, y - 6.3);
     ctx.stroke();
   } else {
-    ctx.font = 'bold 5px system-ui, sans-serif';
-    ctx.fillText('z', x + 5, y - 12);
-    ctx.font = 'bold 4px system-ui, sans-serif';
-    ctx.fillText('z', x + 8, y - 15);
+    ctx.beginPath();
+    ctx.arc(x + 5, y - 12, 1.1, 0, Math.PI * 2);
+    ctx.arc(x + 8, y - 15, .7, 0, Math.PI * 2);
+    ctx.stroke();
   }
   ctx.restore();
 }
 
 export function drawWorkerIdleProp(ctx, x, y, theme, action, progress = 0, facing = 1) {
   if (!action) return;
+  ctx.recordAnimationCue?.('worker-idle', action, { x, y, progress });
   ctx.save();
   ctx.strokeStyle = theme.stroke;
   ctx.fillStyle = theme.text;
@@ -550,13 +747,170 @@ export function drawWorkerIdleProp(ctx, x, y, theme, action, progress = 0, facin
       ctx.arc(x + 8.7 + offset, y - 5 + offset * .6, .38, 0, Math.PI * 2);
       ctx.fill();
     }
+    if (progress >= .48) {
+      // The overwatered plant leaves a puddle, then the worker brings a mop.
+      ctx.beginPath(); ctx.ellipse(x + 10.2, y - 1.2, 3.3, .9, 0, 0, Math.PI * 2);
+      ctx.moveTo(x + 5.8, y - 10.5); ctx.lineTo(x + 10.2, y - 1.8);
+      ctx.moveTo(x + 8.2, y - 1.4); ctx.lineTo(x + 12.3, y - 2.2); ctx.stroke();
+    }
   } else if (action === 'daze') {
     for (const offset of [0, 2, 4]) {
       ctx.beginPath();
       ctx.arc(x + 3.8 + offset, y - 13 - offset * .3, .35, 0, Math.PI * 2);
       ctx.fill();
     }
+  } else if (action === 'blanket') {
+    // The active figure stands beside a sleeping coworker and lays the blanket over them.
+    drawFigure(ctx, x + 8.5, y, theme, { pose: 'sit', lean: -.85, facing: -1, identity: null, scale: .82 });
+    ctx.beginPath();
+    ctx.moveTo(x + 4.1, y - 7.6); ctx.quadraticCurveTo(x + 8.3, y - 4.6, x + 12.3, y - 7.2);
+    ctx.lineTo(x + 12.3, y - 2.2); ctx.lineTo(x + 4.1, y - 2.2); ctx.closePath(); ctx.stroke();
+  } else if (action === 'pet') {
+    // A wooden animal chases a rolling paperclip across the open floor.
+    const run = Math.sin(clamp(progress) * Math.PI * 4) * 1.2;
+    ctx.beginPath(); ctx.ellipse(x + 6 + run, y - 2.2, 2.2, 1.2, 0, 0, Math.PI * 2);
+    ctx.moveTo(x + 8 + run, y - 2.7); ctx.lineTo(x + 9.5 + run, y - 4);
+    ctx.moveTo(x + 10.8, y - 1.8); ctx.arc(x + 10.8, y - 1.8, .65, 0, Math.PI * 1.6);
+    ctx.moveTo(x + 10.8, y - 1.8); ctx.lineTo(x + 12.2, y - 1.8); ctx.stroke();
+  } else if (action === 'robot') {
+    drawFigure(ctx, x + 11, y, theme, { pose: 'sit', facing: -1, identity: null, scale: .78 });
+    ctx.beginPath(); ctx.rect(x + 3, y - 6.4, 4.5, 4); ctx.moveTo(x + 5.25, y - 6.4); ctx.lineTo(x + 5.25, y - 8);
+    ctx.arc(x + 4.3, y - 4.5, .3, 0, Math.PI * 2); ctx.arc(x + 6.2, y - 4.5, .3, 0, Math.PI * 2);
+    ctx.moveTo(x + 7.5, y - 3); ctx.bezierCurveTo(x + 9, y - 2, x + 9, y - 7, x + 12, y - 7);
+    ctx.moveTo(x + 11.2, y - 8.2); ctx.lineTo(x + 12.8, y - 8.2); ctx.stroke();
+  } else if (action === 'elevator_wait') {
+    ctx.beginPath(); ctx.rect(x + 3, y - 11, 6.5, 8.5); ctx.moveTo(x + 6.25, y - 11); ctx.lineTo(x + 6.25, y - 2.5); ctx.stroke();
+    // Three compressed silhouettes fill the car; the active worker waits outside.
+    for (const offset of [4.1, 6.2, 8.2]) drawFigure(ctx, x + offset, y - 2.1, theme, { pose: 'stand', identity: null, scale: .42, alpha: .72 });
+    ctx.beginPath(); ctx.arc(x + 11.2, y - 8.3, 1, 0, Math.PI * 2); ctx.moveTo(x + 11.2, y - 7.3); ctx.lineTo(x + 11.2, y - 3); ctx.stroke();
+  } else if (action === 'stickers') {
+    drawFigure(ctx, x + 10.5, y, theme, { pose: 'stand', facing: -1, identity: null, scale: .82 });
+    const pass = 4.8 + Math.sin(clamp(progress) * Math.PI) * 1.8;
+    ctx.beginPath(); ctx.rect(x + pass, y - 8.2, 2.6, 2.6); ctx.rect(x + 7.2, y - 5.6, 2.6, 2.6);
+    ctx.arc(x + pass + 1.3, y - 6.9, .4, 0, Math.PI * 2); ctx.arc(x + 8.5, y - 4.3, .4, 0, Math.PI * 2); ctx.stroke();
+  } else if (action === 'photo') {
+    drawFigure(ctx, x + 7.5, y, theme, { pose: 'stand', facing: -1, identity: null, scale: .78 });
+    drawFigure(ctx, x + 13.2, y, theme, { pose: 'raise', facing: -1, identity: null, scale: .78 });
+    ctx.beginPath(); ctx.rect(x + 20, y - 10.2, 4.5, 3.1); ctx.arc(x + 22.25, y - 8.65, 1, 0, Math.PI * 2);
+    ctx.moveTo(x + 22.25, y - 7.1); ctx.lineTo(x + 20.2, y - 1.8); ctx.moveTo(x + 22.25, y - 7.1); ctx.lineTo(x + 24.4, y - 1.8); ctx.stroke();
   }
+  ctx.restore();
+}
+
+/** Structured-event work vignettes. No label is painted and no tool kind is guessed. */
+export function drawWorkProp(ctx, x, y, theme, action, progress = 0, facing = 1) {
+  if (!action) return;
+  ctx.recordAnimationCue?.('work', action, { x, y, progress });
+  const p = clamp(progress);
+  const bob = Math.sin(p * Math.PI * 2);
+  ctx.save();
+  ctx.strokeStyle = theme.stroke;
+  ctx.fillStyle = theme.stroke;
+  ctx.lineWidth = .48;
+  ctx.translate(x, y);
+  ctx.scale(facing < 0 ? -1 : 1, 1);
+  ctx.translate(-x, -y);
+  ctx.beginPath();
+  if (action === 'coding') {
+    // Keyboard, breathing monitor and a perforated paper tape physically feeding in.
+    ctx.rect(x + 1.2, y - 4.3, 6.8, 2.1);
+    for (let key = 0; key < 4; key += 1) ctx.moveTo(x + 2 + key * 1.4, y - 3.9), ctx.lineTo(x + 2 + key * 1.4, y - 2.8);
+    ctx.rect(x + 2.2, y - 11.2, 7.2, 5.1 + bob * .12);
+    ctx.moveTo(x - 5, y - 3); ctx.bezierCurveTo(x - 2, y - 5 + bob * .3, x, y - 1.5, x + 1.2, y - 3.2);
+    for (let hole = -4; hole <= 0; hole += 2) ctx.arc(x + hole, y - 3, .22, 0, Math.PI * 2);
+  } else if (action === 'research') {
+    // Shelf with one book pulled out, plus a folding map and rotating globe.
+    ctx.rect(x + 3, y - 14, 8.5, 11.5); ctx.moveTo(x + 3, y - 9); ctx.lineTo(x + 11.5, y - 9);
+    for (let book = 0; book < 4; book += 1) ctx.rect(x + 3.7 + book * 1.35, y - 13.2, 1, 3.7);
+    ctx.rect(x + 8.5 + bob * .5, y - 12.8, 1.2, 5.3);
+    ctx.moveTo(x - 2, y - 4.5); ctx.lineTo(x + .5, y - 6.2); ctx.lineTo(x + 3, y - 4.4); ctx.lineTo(x + .5, y - 2.7); ctx.closePath();
+    ctx.arc(x - 3.3, y - 10.3, 2.1, 0, Math.PI * 2); ctx.moveTo(x - 3.3, y - 8.2); ctx.lineTo(x - 3.3, y - 5.8);
+  } else if (action === 'review') {
+    // An open comparison dossier on the supervisor desk, inspected with a lens.
+    ctx.rect(x + .8, y - 7.3, 6.5, 4.8);
+    ctx.moveTo(x + 4.05, y - 7.3); ctx.lineTo(x + 4.05, y - 2.5);
+    ctx.moveTo(x + 1.8, y - 5.8); ctx.lineTo(x + 5.8, y - 5.8);
+    ctx.arc(x + 7.3, y - 7.5, 2.0, 0, Math.PI * 2);
+    ctx.moveTo(x + 8.8, y - 6.1); ctx.lineTo(x + 10.5, y - 4.4);
+  } else if (action === 'search') {
+    // Telescope on a tripod and an index-card tray; never a hidden-thought bubble.
+    ctx.moveTo(x + 1, y - 10); ctx.lineTo(x + 8.5, y - 12 + bob * .25); ctx.lineTo(x + 9.5, y - 10.7); ctx.lineTo(x + 2, y - 8.7); ctx.closePath();
+    ctx.arc(x + 1.3, y - 9.35, 1.4, 0, Math.PI * 2);
+    ctx.moveTo(x + 5.2, y - 8.6); ctx.lineTo(x + 2.7, y - 2.2); ctx.moveTo(x + 5.2, y - 8.6); ctx.lineTo(x + 8, y - 2.2);
+    ctx.rect(x - 4.8, y - 6.1, 4.5, 3.4); ctx.moveTo(x - 4, y - 4.9); ctx.lineTo(x - 1.2, y - 4.9);
+  } else if (action === 'test') {
+    // Bordered test track, a moving toy car and a physical finish flag.
+    ctx.moveTo(x - 3, y - 2.5); ctx.quadraticCurveTo(x + 2, y - 10, x + 11, y - 3);
+    ctx.moveTo(x - 2, y - 1.3); ctx.quadraticCurveTo(x + 2.5, y - 7.7, x + 10.2, y - 1.8);
+    const carX = x + 3.8 + bob * 1.3; ctx.rect(carX, y - 6.4, 3.2, 1.7); ctx.arc(carX + .7, y - 4.6, .45, 0, Math.PI * 2); ctx.arc(carX + 2.5, y - 4.6, .45, 0, Math.PI * 2);
+    ctx.moveTo(x + 10.7, y - 2.2); ctx.lineTo(x + 10.7, y - 9); ctx.lineTo(x + 13.4, y - 7.8); ctx.lineTo(x + 10.7, y - 6.7);
+  } else if (action === 'git') {
+    // A waist-high merge table with a freestanding branch tree and movable tokens.
+    ctx.rect(x - 3.5, y - 5.5, 13, 3); ctx.moveTo(x - 2.7, y - 2.5); ctx.lineTo(x - 2.7, y);
+    ctx.moveTo(x + 8.7, y - 2.5); ctx.lineTo(x + 8.7, y);
+    ctx.moveTo(x + 1, y - 5.5); ctx.lineTo(x + 1, y - 13); ctx.lineTo(x + 5, y - 15);
+    ctx.moveTo(x + 1, y - 10); ctx.lineTo(x + 5, y - 8); ctx.lineTo(x + 7.2, y - 10);
+    for (const [dx, dy] of [[1,-13],[5,-15],[5,-8],[7.2,-10]]) ctx.arc(x + dx, y + dy, .65, 0, Math.PI * 2);
+  } else if (action === 'merge_conflict') {
+    // Two visibly different hatch-pattern paper halves are aligned on the merge table.
+    ctx.rect(x - 3.5, y - 5.2, 13, 3); ctx.moveTo(x - 2.7, y - 2.2); ctx.lineTo(x - 2.7, y);
+    ctx.moveTo(x + 8.7, y - 2.2); ctx.lineTo(x + 8.7, y);
+    const gap = 1.3 + Math.abs(bob) * .8;
+    ctx.rect(x - gap - 4.3, y - 10, 4.3, 4.5); ctx.rect(x + gap, y - 10, 4.3, 4.5);
+    for (let stripe = 0; stripe < 3; stripe += 1) {
+      ctx.moveTo(x - gap - 3.8, y - 9.2 + stripe); ctx.lineTo(x - gap - .6, y - 9.2 + stripe);
+      ctx.moveTo(x + gap + .7 + stripe, y - 9.6); ctx.lineTo(x + gap + .2 + stripe, y - 6.2);
+    }
+    ctx.moveTo(x - gap, y - 7.8); ctx.lineTo(x + gap, y - 7.8);
+  } else if (action === 'build') {
+    // Workshop bench: loose parts are assembled, checked by a gear, then boxed.
+    ctx.rect(x - 3.5, y - 5.5, 13, 3.2); ctx.moveTo(x - 2.6, y - 2.3); ctx.lineTo(x - 2.6, y);
+    ctx.moveTo(x + 8.5, y - 2.3); ctx.lineTo(x + 8.5, y);
+    ctx.rect(x - 2, y - 10, 4.2, 3.7); ctx.moveTo(x - 2, y - 10); ctx.lineTo(x + .1, y - 12); ctx.lineTo(x + 2.2, y - 10);
+    ctx.arc(x + 6.2, y - 8.1, 2 + Math.abs(bob) * .3, 0, Math.PI * 2);
+    for (let spoke = 0; spoke < 4; spoke += 1) {
+      const a = spoke * Math.PI / 2 + p; ctx.moveTo(x + 6.2, y - 8.1); ctx.lineTo(x + 6.2 + Math.cos(a) * 3, y - 8.1 + Math.sin(a) * 3);
+    }
+  } else if (action === 'document') {
+    // A printer mouth feeds a wavy sheet while a separate output stack grows.
+    ctx.rect(x - 2, y - 10.5, 10, 7); ctx.rect(x, y - 13.8, 6, 3.5);
+    ctx.moveTo(x + 1, y - 5.2); ctx.bezierCurveTo(x + 3, y - 7 + bob * .3, x + 5, y - 4, x + 7, y - 5.6);
+    for (let i = 0; i < 3; i += 1) ctx.rect(x + 9 + i * .55, y - 6 - i * .55, 6, 3.5);
+  } else if (action === 'context') {
+    // Loose sheets visibly fold into a thin ring binder beside the archive shelf.
+    for (let i = 0; i < 3; i += 1) ctx.rect(x - 4 + i * (2 + bob * .15), y - 9 - i * .8, 4.5, 4);
+    ctx.rect(x + 4, y - 10.5, 5.2, 7.2); ctx.moveTo(x + 5, y - 10); ctx.lineTo(x + 5, y - 3.8);
+    ctx.arc(x + 5.7, y - 8.8, .4, 0, Math.PI * 2); ctx.arc(x + 5.7, y - 5.1, .4, 0, Math.PI * 2);
+  } else if (action === 'night') {
+    // A headlamp is attached to the actor; its cone lands on the live keyboard.
+    ctx.arc(x, y - 13.2, 1.5, Math.PI, Math.PI * 2); ctx.arc(x + 1.4, y - 13.2, .6, 0, Math.PI * 2);
+    ctx.moveTo(x + 2, y - 13.1); ctx.lineTo(x + 9, y - 6 + bob * .2); ctx.lineTo(x + 3.2, y - 5.1); ctx.closePath();
+    ctx.rect(x + 1.2, y - 4.3, 7, 2.1); ctx.arc(x + 11, y - 14, 2, .55, Math.PI * 1.7);
+  } else if (action === 'external_wait') {
+    // Telephone receiver, cord and an adjacent wall clock.
+    ctx.arc(x + 8, y - 10, 3, 0, Math.PI * 2); ctx.moveTo(x + 8, y - 10); ctx.lineTo(x + 8 + bob, y - 12);
+    ctx.moveTo(x + 8, y - 10); ctx.lineTo(x + 10, y - 9);
+    ctx.moveTo(x - 1, y - 7); ctx.quadraticCurveTo(x + 2, y - 10, x + 5, y - 7);
+    ctx.moveTo(x - 1, y - 7); ctx.lineTo(x, y - 5.2); ctx.moveTo(x + 5, y - 7); ctx.lineTo(x + 4, y - 5.2);
+    ctx.bezierCurveTo(x + 4, y - 3, x + 8, y - 4, x + 8, y - 7);
+  } else if (action === 'rate_limit') {
+    // Freestanding charging pedestal with a cable plugged into the waiting worker.
+    ctx.rect(x + 5, y - 12, 5.8, 9); ctx.rect(x + 6.2, y - 10.2, 3.4, 4.5);
+    ctx.moveTo(x + 10.8, y - 6); ctx.bezierCurveTo(x + 13, y - 4, x + 10, y - 1.5, x + 3, y - 5.8);
+    ctx.moveTo(x + 2.2, y - 6.8); ctx.lineTo(x + 3.8, y - 6.8);
+  } else if (action === 'whiteboard') {
+    // Sticky cards are placed on the real wall board; travelPose supplies the step back.
+    ctx.rect(x - 2.5, y - 14, 13, 8); ctx.rect(x - 1, y - 12.5, 2.3, 1.8); ctx.rect(x + 2.2, y - 10, 2.3, 1.8);
+    ctx.rect(x + 5.6, y - 12.4, 2.3, 1.8); ctx.moveTo(x + .2, y - 7.2); ctx.lineTo(x + 6.5, y - 7.2);
+  } else if (action === 'crash') {
+    // Explicit crash only: flickering monitor, open toolbox, and a standing repair pose.
+    ctx.rect(x + 1, y - 12, 8, 5.5); ctx.moveTo(x + 2, y - 10.5); ctx.lineTo(x + 8, y - 8 + bob * .7);
+    ctx.rect(x + 9.8, y - 6.2, 7, 3.8); ctx.moveTo(x + 11.5, y - 6.2); ctx.quadraticCurveTo(x + 13.3, y - 9, x + 15, y - 6.2);
+    for (const offset of [0, 2.2, 4.4]) {
+      ctx.moveTo(x + 2 + offset, y - 14 - Math.abs(bob)); ctx.lineTo(x + 3 + offset, y - 16 - Math.abs(bob));
+    }
+  }
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -564,6 +918,7 @@ function drawOwnerRequest(ctx, room, project, theme, cue, time) {
   const identity = IDENTITY[cue.event.provider] || null;
   const progress = clamp(cue.progress);
   const stage = ownerRequestStage(progress);
+  ctx.recordAnimationCue?.('signature', 'owner-request', { room, progress: cue.progress, stage });
   if (room !== 'owner') {
     const [sx, sy] = project(5.3, 6.8);
     const [tx, ty] = project(PLATE.gridWidth - .35, 4.2);
@@ -594,7 +949,7 @@ function drawOwnerRequest(ctx, room, project, theme, cue, time) {
     const local = clamp((progress - .58) / .2);
     const knock = Math.min(3, Math.floor(local * 3) + 1);
     ctx.save();
-    ctx.strokeStyle = theme.waiting;
+    ctx.strokeStyle = theme.stroke;
     ctx.lineWidth = .65;
     for (let index = 0; index < knock; index += 1) {
       ctx.beginPath();
@@ -603,34 +958,41 @@ function drawOwnerRequest(ctx, room, project, theme, cue, time) {
     }
     ctx.restore();
   }
-  if (stage === 'request_queue') drawQuestionTag(ctx, x, y - 14, theme);
 }
 
-function drawAuthorityHandoff(ctx, room, project, theme, cue, time) {
-  const identity = IDENTITY[cue.event.provider] || null;
+function drawAuthorityHandoff(ctx, room, project, theme, cue, time, layout) {
+  ctx.recordAnimationCue?.('signature', 'authority', { room, progress: cue.progress });
+  const sourceIdentity = IDENTITY[cue.event.provider] || null;
+  const targetIdentity = IDENTITY[cue.event.targetProvider || cue.event.provider] || null;
   const progress = ease(clamp(cue.progress));
-  const [ownerX, ownerY] = project(4.9, 3.1);
-  const [recipientX, recipientY] = project(room === 'owner' ? 6.8 : 5.9, room === 'owner' ? 5.4 : 5.9);
-  const cardX = ownerX + (recipientX - ownerX) * progress;
-  const cardY = ownerY + (recipientY - ownerY) * progress - 8;
-  if (room !== 'owner') drawFigure(ctx, ownerX, ownerY, theme, { pose: 'stand', facing: 1, identity: IDENTITY.owner, alpha: 1 });
-  drawFigure(ctx, recipientX, recipientY, theme, { pose: 'stand', facing: -1, identity, alpha: 1 });
+  const manager = layout?.manager || { gx: 2.35, gy: 8.1 };
+  const worker = cueSeatPoints(layout)[0] || { gx: 5.9, gy: 5.9 };
+  const source = room === 'owner' ? { gx: manager.gx + 1.0, gy: manager.gy - .25 } : manager;
+  const target = room === 'owner' ? { gx: 5.1, gy: 6.1 } : worker;
+  const [sourceX, sourceY] = project(source.gx, source.gy);
+  const [targetX, targetY] = project(target.gx, target.gy);
+  const cardX = sourceX + (targetX - sourceX) * progress;
+  const cardY = sourceY + (targetY - sourceY) * progress - 8;
+  // Owner remains at the permanent first-floor desk. On execution floors this is a
+  // strictly local lead-to-recipient transfer, never a duplicate Owner apparition.
+  if (room !== 'owner') drawFigure(ctx, sourceX, sourceY, theme, { pose: 'stand', facing: 1, identity: sourceIdentity, alpha: 1 });
+  drawFigure(ctx, targetX, targetY, theme, { pose: 'stand', facing: -1, identity: targetIdentity, alpha: 1 });
   ctx.save();
-  ctx.strokeStyle = theme.waiting;
-  ctx.fillStyle = theme.waiting;
+  ctx.strokeStyle = theme.stroke;
+  ctx.fillStyle = theme.stroke;
   ctx.lineWidth = .8;
   ctx.strokeRect(cardX - 4.2, cardY - 2.8, 8.4, 5.6);
   ctx.beginPath();
   ctx.moveTo(cardX - 2.3, cardY);
   ctx.lineTo(cardX - .4, cardY + 1.8);
   ctx.lineTo(cardX + 2.8, cardY - 1.7);
+  // A physical authorization key travels with the card; it is an icon, never a label.
+  ctx.arc(cardX - 5.8, cardY, 1.5, 0, Math.PI * 2);
+  ctx.moveTo(cardX - 4.3, cardY); ctx.lineTo(cardX - .8, cardY);
+  ctx.moveTo(cardX - 1.8, cardY); ctx.lineTo(cardX - 1.8, cardY + 1.6);
   ctx.stroke();
-  if (progress > .72) {
-    ctx.font = 'bold 4.5px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('AUTH', recipientX, recipientY - 16 + Math.sin(time / 300) * .4);
-  }
   ctx.restore();
+  void time;
 }
 
 /**
@@ -638,12 +1000,14 @@ function drawAuthorityHandoff(ctx, room, project, theme, cue, time) {
  * the walkway, stands at the Owner's desk long enough to hand the delivery over, then
  * walks back out. Owner rule (2026-08-11): AI go to the Owner to report, not the reverse.
  */
-function drawOwnerReport(ctx, project, theme, cue, time) {
-  const identity = IDENTITY[cue.event.provider] || null;
+function drawOwnerReport(ctx, project, theme, cue, time, layout, supervisorProvider = null) {
+  ctx.recordAnimationCue?.('signature', 'owner-report', { progress: cue.progress });
+  const identity = IDENTITY[supervisorProvider || cue.event.provider] || null;
   // Straight up the open front aisle: the waiting chairs sit at gx 7 and 8.8, so the
   // courier keeps to gx 6.3 and never walks through one.
   const [doorX, doorY] = project(6.3, PLATE.gridDepth - 1.2);
-  const [spotX, spotY] = project(6.3, 5.2);
+  const ownerSpot = layout?.manager || { gx: 2.8, gy: 6.35 };
+  const [spotX, spotY] = project(ownerSpot.gx + 1.2, ownerSpot.gy - .45);
   // The Owner-side visitor only appears after the worker handed the result to the lead
   // and the lead reached the lift. Both floors therefore show one causal chain.
   const rawProgress = clamp(cue.progress);
@@ -656,9 +1020,9 @@ function drawOwnerReport(ctx, project, theme, cue, time) {
 
   // The delivery lands on the Owner's desk the moment the report starts.
   if (!arriving) {
-    const [boxX, boxY] = project(5.4, 2.6, 1.2);
+    const [boxX, boxY] = project(ownerSpot.gx, ownerSpot.gy - .72, 1.2);
     ctx.save();
-    ctx.strokeStyle = theme.working;
+    ctx.strokeStyle = theme.stroke;
     ctx.lineWidth = .55;
     ctx.beginPath();
     ctx.rect(boxX - 3, boxY - 3.4, 6, 3.4);
@@ -677,39 +1041,46 @@ function drawOwnerReport(ctx, project, theme, cue, time) {
 }
 
 /** Signature J, team side: the worker leaves the floor for the lift, delivery in hand. */
-function drawDeliveryRun(ctx, project, theme, cue, time, layout, deliveryHome) {
-  const identity = IDENTITY[cue.event.provider] || null;
+function drawDeliveryRun(ctx, project, theme, cue, time, layout, deliveryHome, courierHome, supervisorProvider = null) {
+  const workerIdentity = IDENTITY[cue.event.provider] || null;
+  const supervisorIdentity = IDENTITY[supervisorProvider || cue.event.provider] || null;
   const progress = clamp(cue.progress);
   const stage = completionStage(progress);
-  const home = deliveryHome || layout?.seats?.find((seat) => !seat.role) || { gx: 2.1, gy: 5.1 };
-  const [workerX, workerY] = project(home.gx, home.gy);
-  const [leadX, leadY] = project(5.3, 6.7);
+  ctx.recordAnimationCue?.('signature', 'delivery-stage', { stage, progress });
+  const leadHome = deliveryHome || layout?.manager || { gx: 2.55, gy: 8.35, facing: -1 };
+  const workerHome = courierHome || layout?.staffSeats?.[0]
+    ? { gx: courierHome?.gx ?? layout.staffSeats[0][0], gy: courierHome?.gy ?? layout.staffSeats[0][1] }
+    : leadHome;
+  const [workerX, workerY] = project(workerHome.gx, workerHome.gy);
+  const [leadX, leadY] = project(leadHome.gx, leadHome.gy);
   const [liftX, liftY] = project(PLATE.gridWidth - .4, 4.2);
   if (progress >= .9) {
     const local = ease((progress - .9) / .1);
-    drawFigure(ctx, liftX + (workerX - liftX) * local, liftY + (workerY - liftY) * local, theme, {
+    drawFigure(ctx, liftX + (leadX - liftX) * local, liftY + (leadY - liftY) * local, theme, {
       pose: local < .92 ? 'walk' : 'sit',
       carry: false,
       swing: Math.sin(time / 120) * .55,
-      facing: deliveryReturnFacing(home, local),
-      identity,
+      facing: deliveryReturnFacing(leadHome, local),
+      identity: supervisorIdentity,
       alpha: clamp((progress - .9) / .025)
     });
     return;
   }
   let x = workerX;
   let y = workerY;
+  let identity = workerIdentity;
   if (stage === 'worker_to_lead') {
     const local = ease(progress / .3);
-    x += (leadX - workerX) * local;
+    x += (leadX + 5 - workerX) * local;
     y += (leadY - workerY) * local;
   } else if (stage === 'lead_accepts') {
-    x = leadX; y = leadY;
-    drawFigure(ctx, leadX + 5, leadY - 1, theme, { pose: 'stand', facing: -1, identity, alpha: 1 });
+    x = leadX + 5; y = leadY;
+    drawFigure(ctx, leadX, leadY, theme, { pose: 'stand', facing: 1, identity: supervisorIdentity, alpha: 1 });
   } else {
     const local = ease(clamp((progress - .48) / .24));
     x = leadX + (liftX - leadX) * local;
     y = leadY + (liftY - leadY) * local;
+    identity = supervisorIdentity;
   }
   drawFigure(ctx, x, y, theme, {
     pose: stage === 'lead_accepts' ? 'stand' : 'walk',
@@ -721,101 +1092,297 @@ function drawDeliveryRun(ctx, project, theme, cue, time, layout, deliveryHome) {
   });
 }
 
-function drawSignatureCue(ctx, room, cue, theme, project, height, time, layout, deliveryHome) {
+function drawFolder(ctx, x, y, theme, color = null, { stamp = false, ribbon = false, toolbox = false } = {}) {
+  ctx.save();
+  ctx.strokeStyle = color || theme.stroke;
+  ctx.lineWidth = .65;
+  ctx.beginPath();
+  ctx.rect(x - 3.6, y - 2.5, 7.2, 5);
+  if (toolbox) {
+    ctx.moveTo(x - 1.7, y - 2.5);
+    ctx.quadraticCurveTo(x, y - 5, x + 1.7, y - 2.5);
+  }
+  if (stamp) ctx.arc(x, y, 1.45, 0, Math.PI * 2);
+  if (ribbon) {
+    ctx.moveTo(x - 1, y + 2.5); ctx.lineTo(x - 2.2, y + 5.2);
+    ctx.moveTo(x + 1, y + 2.5); ctx.lineTo(x + 2.2, y + 5.2);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function cuePoint(project, point, fallback) {
+  const value = point || fallback;
+  return project(value.gx, value.gy);
+}
+
+function cueSeatPoints(layout) {
+  const raw = layout?.staffSeats?.length
+    ? layout.staffSeats.map(([gx, gy]) => ({ gx, gy }))
+    : (layout?.seats || []).filter((seat) => !seat.role || seat.role === 'meeting');
+  return raw.slice(0, 6);
+}
+
+function drawArrival(ctx, project, theme, cue, time, layout) {
+  const progress = ease(clamp(cue.progress));
+  const door = cuePoint(project, layout?.walkway, { gx: 5.5, gy: 9.2 });
+  const manager = cuePoint(project, layout?.manager, { gx: 2.35, gy: 8.1 });
+  const target = [manager[0] + 7, manager[1]];
+  drawFigure(ctx, manager[0], manager[1], theme, { pose: 'sit', facing: -1, identity: IDENTITY[cue.event.provider] });
+  // The manager presses a physical desk bell before the lift doors open.
+  ctx.save(); ctx.strokeStyle = theme.stroke; ctx.lineWidth = .55; ctx.beginPath();
+  ctx.arc(manager[0] + 4.2, manager[1] - 6.4, 1.8, Math.PI, Math.PI * 2);
+  ctx.moveTo(manager[0] + 1.8, manager[1] - 4.6); ctx.lineTo(manager[0] + 6.6, manager[1] - 4.6);
+  ctx.moveTo(manager[0] + 4.2, manager[1] - 8.2); ctx.lineTo(manager[0] + 4.2, manager[1] - 9.2); ctx.stroke(); ctx.restore();
+  if (progress < .18) {
+    ctx.save();
+    ctx.strokeStyle = theme.stroke; ctx.lineWidth = .55;
+    for (let i = 0; i < 2; i += 1) {
+      ctx.beginPath(); ctx.arc(manager[0] + 5 + i * 1.6, manager[1] - 9 - i, 1.2 + i * .2, -1.1, 1.1); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  const local = ease(clamp((progress - .08) / .72));
+  const x = door[0] + (target[0] - door[0]) * local;
+  const y = door[1] + (target[1] - door[1]) * local;
+  drawFigure(ctx, x, y, theme, { pose: local < .92 ? 'walk' : 'stand', carry: progress < .76, swing: Math.sin(time / 120) * .55, facing: -1, identity: IDENTITY[cue.event.provider] });
+  if (progress >= .72) drawFolder(ctx, manager[0] + 4, manager[1] - 8, theme);
+}
+
+function drawLeadHandoff(ctx, project, theme, cue, time, layout) {
+  const progress = ease(clamp(cue.progress));
+  const manager = cuePoint(project, layout?.manager, { gx: 2.35, gy: 8.1 });
+  const otherSeat = cueSeatPoints(layout)[0] || { gx: 4.4, gy: 6.2 };
+  const other = project(otherSeat.gx, otherSeat.gy);
+  const a = [manager[0] + (other[0] - manager[0]) * .38, manager[1] + (other[1] - manager[1]) * .38];
+  const b = [manager[0] + (other[0] - manager[0]) * .68, manager[1] + (other[1] - manager[1]) * .68];
+  drawFigure(ctx, a[0], a[1], theme, { pose: 'stand', facing: 1, lean: Math.sin(time / 260) * .2, identity: IDENTITY[cue.event.provider] });
+  drawFigure(ctx, b[0], b[1], theme, { pose: 'stand', facing: -1, lean: -Math.sin(time / 260) * .2, identity: IDENTITY[cue.event.targetProvider || cue.event.provider] });
+  const pass = progress < .7 ? ease(progress / .7) : 1;
+  drawFolder(ctx, a[0] + (b[0] - a[0]) * pass, a[1] + (b[1] - a[1]) * pass - 8, theme);
+  const lightX = a[0] + (b[0] - a[0]) * pass;
+  ctx.save(); ctx.strokeStyle = theme.soft; ctx.globalAlpha = .45 + .35 * Math.sin(time / 180) ** 2;
+  ctx.beginPath(); ctx.arc(lightX, a[1] - 15, 2.2, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+}
+
+function drawDiscussionTravel(ctx, project, theme, cue, time, layout, returning = false) {
+  const participants = Array.isArray(cue.event.participantProviders)
+    ? orderedDiscussionProviders(cue.event.participantProviders, cue.event.chairProvider)
+    : [];
+  const seats = (layout?.seats || []).filter((seat) => seat.role === 'meeting').slice(0, participants.length);
+  if (!seats.length) return;
+  const door = layout?.walkway || { gx: 5.55, gy: 9.15 };
+  const overall = ease(clamp(cue.progress));
+  for (const [index, seat] of seats.entries()) {
+    ctx.recordAnimationCue?.('discussion-participant', participants[index], { returning, index });
+    const stagger = clamp(overall * 1.45 - index * .12);
+    const local = returning ? 1 - stagger : stagger;
+    const xg = door.gx + (seat.gx - door.gx) * local;
+    const yg = door.gy + (seat.gy - door.gy) * local;
+    const [x, y] = project(xg, yg);
+    drawFigure(ctx, x, y, theme, {
+      pose: stagger < .92 ? 'walk' : 'sit', swing: Math.sin(time / 115 + index) * .5,
+      facing: returning ? 1 : -1, identity: IDENTITY[participants[index]],
+      carry: !returning && index === 0
+    });
+  }
+  if (!returning && overall > .58) {
+    const table = layout.items.find((item) => item.kind === 'meeting');
+    if (table) drawDiscussionProp(ctx, project, theme, table, cue.event.visualKind || 'evidence', overall, time);
+  }
+}
+
+function drawDiscussionProp(ctx, project, theme, table, kind, progress, time) {
+  const [x, y] = project(table.gx, table.gy, .82);
+  const pulse = Math.sin(time / 220) * .5;
+  ctx.save(); ctx.strokeStyle = theme.stroke; ctx.lineWidth = .5; ctx.globalAlpha *= clamp((progress - .58) / .2);
+  ctx.beginPath();
+  if (kind === 'support' || kind === 'risk') {
+    ctx.rect(x - 5, y - 4 + pulse, 4, 3); ctx.rect(x + 1, y - 3 - pulse, 4, 3);
+  } else if (kind === 'idea') {
+    ctx.arc(x, y - 5, 2.3, 0, Math.PI * 2); ctx.moveTo(x - 1.4, y - 2.2); ctx.lineTo(x + 1.4, y - 2.2);
+  } else if (kind === 'no_consensus') {
+    ctx.rect(x - 6, y - 4, 4.5, 4.5); ctx.rect(x + 1.5 + Math.abs(pulse) * 2, y - 4, 4.5, 4.5);
+  } else if (kind === 'consensus' || kind === 'reconsider') {
+    const gap = kind === 'reconsider' ? 2 + Math.abs(pulse) * 2 : 0;
+    ctx.rect(x - 6 - gap, y - 4, 5.5, 5); ctx.rect(x + .5 + gap, y - 4, 5.5, 5);
+    ctx.moveTo(x - .5 - gap, y - 1.5); ctx.lineTo(x + .5 + gap, y - 1.5);
+  } else {
+    ctx.rect(x - 4.5, y - 4, 9, 5.5); ctx.moveTo(x - 3, y - 2.3); ctx.lineTo(x + 3, y - 2.3);
+  }
+  ctx.stroke(); ctx.restore();
+}
+
+function drawReviewBeat(ctx, project, theme, cue, time, layout, approved) {
+  const progress = ease(clamp(cue.progress));
+  const worker = cueSeatPoints(layout)[0] || { gx: 5.4, gy: 4.8 };
+  const manager = layout?.manager || { gx: 2.35, gy: 8.1 };
+  const local = progress < .55 ? ease(progress / .55) : progress > .78 ? 1 - ease((progress - .78) / .22) : 1;
+  const gx = worker.gx + (manager.gx - worker.gx) * local;
+  const gy = worker.gy + (manager.gy - worker.gy) * local;
+  const [x, y] = project(gx, gy);
+  drawFigure(ctx, x, y, theme, { pose: local > .96 ? 'stand' : 'walk', carry: progress < .62, swing: Math.sin(time / 120) * .5, facing: local > .5 ? 1 : -1, identity: IDENTITY[cue.event.provider] });
+  const [mx, my] = project(manager.gx, manager.gy);
+  drawFigure(ctx, mx, my, theme, { pose: 'sit', facing: -1, identity: IDENTITY[cue.event.provider] });
+  if (progress > .45) drawFolder(ctx, mx + 5, my - 8, theme, null, { stamp: true, ribbon: approved });
+}
+
+function drawErrorBeat(ctx, project, theme, cue, time, layout) {
+  const worker = cueSeatPoints(layout)[0] || { gx: 5.4, gy: 4.8 };
+  const manager = layout?.manager || { gx: 2.35, gy: 8.1 };
+  const local = ease(clamp(cue.progress * 1.35));
+  const [x, y] = project(worker.gx + (manager.gx - worker.gx) * local, worker.gy + (manager.gy - worker.gy) * local);
+  drawFigure(ctx, x, y, theme, { pose: local < .9 ? 'walk' : 'stand', carry: true, swing: Math.sin(time / 100) * .55, facing: 1, identity: IDENTITY[cue.event.provider] });
+  drawFolder(ctx, x + 3, y - 8, theme, null, { toolbox: true });
+  const [px, py] = project(worker.gx, worker.gy - .5);
+  ctx.save(); ctx.strokeStyle = theme.stroke; ctx.lineWidth = .55;
+  const bugY = py - 5 - Math.abs(Math.sin(time / 120)) * 2;
+  ctx.beginPath(); ctx.ellipse(px, bugY, 1.5, 1, 0, 0, Math.PI * 2);
+  for (const offset of [-1, 0, 1]) {
+    ctx.moveTo(px - .8, bugY + offset * .6); ctx.lineTo(px - 2.3, bugY + offset * .9);
+    ctx.moveTo(px + .8, bugY + offset * .6); ctx.lineTo(px + 2.3, bugY + offset * .9);
+  }
+  if (cue.progress > .45) {
+    ctx.arc(px, bugY + .8, 4, Math.PI, 0); ctx.moveTo(px - 4, bugY + .8); ctx.lineTo(px - 4, bugY + 4.8);
+    ctx.lineTo(px + 4, bugY + 4.8); ctx.lineTo(px + 4, bugY + .8);
+  }
+  ctx.stroke(); ctx.restore();
+}
+
+function multiDeliveryManager(layout, occupants, event) {
+  if (layout?.design !== 'first-floor') return layout?.manager || { gx: 2.35, gy: 8.1 };
+  const projectLead = assignSeats(layout, occupants)
+    .find((entry) => !entry.person.hidden && isCueMainPerson(entry.person, event));
+  return projectLead
+    ? { gx: projectLead.gx, gy: projectLead.gy }
+    : (layout?.manager || { gx: 2.35, gy: 8.1 });
+}
+
+function drawMultiDelivery(ctx, project, theme, cue, time, layout, occupants = []) {
+  const manager = multiDeliveryManager(layout, occupants, cue.event);
+  ctx.recordAnimationCue?.('signature', 'multi-delivery', {
+    roomDesign: layout?.design || null,
+    manager: { ...manager },
+    progress: cue.progress
+  });
+  const sessionId = String(cue.event.sessionId || '');
+  const projectWorkers = assignSeats(layout, occupants)
+    .filter((entry) => !entry.person.hidden
+      && entry.person.provider !== 'owner'
+      && !isCueMainPerson(entry.person, cue.event)
+      && (!sessionId || String(entry.person.sessionId || '').endsWith(`:${sessionId}`)))
+    .map((entry) => ({ gx: entry.gx, gy: entry.gy }));
+  const seats = (projectWorkers.length ? projectWorkers : cueSeatPoints(layout)).slice(0, 3);
+  for (const [index, seat] of seats.entries()) {
+    const local = ease(clamp(cue.progress * 1.45 - index * .16));
+    const queue = { gx: manager.gx + .7 + index * .42, gy: manager.gy - .12 + index * .34 };
+    const collision = index < 2 && cue.progress >= .28 && cue.progress < .48;
+    const recoil = collision ? Math.sin((cue.progress - .28) / .2 * Math.PI) * (index === 0 ? -.35 : .35) : 0;
+    const [x, y] = project(seat.gx + (queue.gx - seat.gx) * local + recoil, seat.gy + (queue.gy - seat.gy) * local);
+    drawFigure(ctx, x, y, theme, { pose: local < .92 ? 'walk' : 'stand', carry: true, swing: Math.sin(time / 105 + index) * .55, facing: 1, identity: IDENTITY[cue.event.provider] });
+  }
+  if (cue.progress >= .28 && cue.progress < .48 && seats.length >= 2) {
+    const [cx, cy] = project(manager.gx + 1.15, manager.gy - .65);
+    ctx.save(); ctx.strokeStyle = theme.stroke; ctx.lineWidth = .55; ctx.beginPath();
+    for (let ray = 0; ray < 5; ray += 1) {
+      const angle = ray * Math.PI * 2 / 5;
+      ctx.moveTo(cx + Math.cos(angle) * 2, cy + Math.sin(angle) * 2);
+      ctx.lineTo(cx + Math.cos(angle) * 4, cy + Math.sin(angle) * 4);
+    }
+    ctx.stroke(); ctx.restore();
+  }
+}
+
+function drawCancelledBeat(ctx, project, theme, cue, time, layout) {
+  const seat = cueSeatPoints(layout)[0] || { gx: 5.2, gy: 4.5 };
+  const door = layout?.walkway || { gx: 5.55, gy: 9.15 };
+  const progress = ease(clamp(cue.progress));
+  const local = ease(clamp((progress - .28) / .72));
+  const [x, y] = project(seat.gx + (door.gx - seat.gx) * local, seat.gy + (door.gy - seat.gy) * local);
+  drawFigure(ctx, x, y, theme, { pose: local < .92 ? 'walk' : 'stand', carry: progress < .28, swing: Math.sin(time / 110) * .5, facing: 1, identity: IDENTITY[cue.event.provider], alpha: 1 - clamp((progress - .9) / .1) });
+  const [mx, my] = cuePoint(project, layout?.manager, { gx: 2.35, gy: 8.1 });
+  drawFigure(ctx, mx, my, theme, { pose: 'stand', carry: progress >= .28, facing: 1, identity: IDENTITY[cue.event.provider] });
+  if (progress >= .2 && progress < .4) drawFolder(ctx, x + (mx - x) * ((progress - .2) / .2), y + (my - y) * ((progress - .2) / .2) - 8, theme);
+}
+
+function drawClosingProject(ctx, room, project, theme, cue, time, layout, occupants) {
+  ctx.recordAnimationCue?.('closure', cue.kind, { room, progress: cue.progress });
+  if (room === 'owner') {
+    if (cue.kind === 'closing_report') {
+      drawOwnerReport(ctx, project, theme, { ...cue, progress: .72 + clamp(cue.progress) * .28 }, time, layout, cue.event.provider);
+      return;
+    }
+    // A first-floor project with no delivery evidence leaves quietly; Owner remains at
+    // the permanent desk and receives no invented report or delivery box.
+    const sessionId = String(cue.event.sessionId || '');
+    const projectPeople = occupants.filter((person) => person.provider !== 'owner'
+      && (!sessionId || String(person.sessionId || '').endsWith(`:${sessionId}`)));
+    const placements = assignSeats(layout, projectPeople);
+    const door = layout?.walkway || { gx: 5.55, gy: 9.15 };
+    for (const [index, placement] of placements.entries()) {
+      const local = ease(clamp(cue.progress * 1.35 - index * .08));
+      const [x, y] = project(placement.gx + (door.gx - placement.gx) * local, placement.gy + (door.gy - placement.gy) * local);
+      drawFigure(ctx, x, y, theme, { pose: local < .94 ? 'walk' : 'stand', carry: false, swing: Math.sin(time / 105 + index) * .55, facing: 1, identity: IDENTITY[placement.person.provider], alpha: 1 - clamp((cue.progress - .88) / .12) });
+    }
+    return;
+  }
+  const placements = assignSeats(layout, occupants).filter((entry) => entry.person.provider !== 'owner');
+  const door = layout?.walkway || { gx: 5.55, gy: 9.15 };
+  for (const [index, placement] of placements.entries()) {
+    const local = ease(clamp(cue.progress * 1.35 - index * .07));
+    const [x, y] = project(placement.gx + (door.gx - placement.gx) * local, placement.gy + (door.gy - placement.gy) * local);
+    drawFigure(ctx, x, y, theme, { pose: local < .94 ? 'walk' : 'stand', carry: index === 0 || index % 2 === 1, swing: Math.sin(time / 105 + index) * .55, facing: 1, identity: IDENTITY[placement.person.provider || cue.event.provider], alpha: 1 - clamp((cue.progress - .88) / .12) });
+  }
+}
+
+function drawSignatureCue(ctx, room, cue, theme, project, height, time, layout, deliveryHome, courierHome, supervisorProvider, occupants = []) {
   if (!cue) return;
   const progress = ease(cue.progress);
   const center = project(PLATE.gridWidth / 2, PLATE.gridDepth / 2 + 1.5);
   ctx.save();
   ctx.strokeStyle = theme.stroke;
   ctx.lineCap = 'round';
-  const badge = (color) => {
-    ctx.save();
-    ctx.fillStyle = color;
-    ctx.font = 'bold 6px "Microsoft JhengHei", system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'alphabetic';
-    if (cue.code) ctx.fillText(cue.code, 8, 10);
-    ctx.restore();
-  };
+  // Event codes used to be painted as explanatory letters. The animation is now purely
+  // visual, so choreography keeps its shapes and motion without any canvas labels.
+  const badge = () => {};
 
   if (cue.kind === 'arrival') {
-    const [sx, sy] = project(PLATE.gridWidth - .5, PLATE.gridDepth - 2.5);
-    const [tx, ty] = project(PLATE.gridWidth / 2, PLATE.gridDepth / 2);
-    drawFigure(ctx, sx + (tx - sx) * progress, sy + (ty - sy) * progress, theme, {
-      pose: 'walk', carry: true, swing: Math.sin(time / 120) * .5, alpha: 1 - progress * .15, facing: -1
-    });
+    drawArrival(ctx, project, theme, cue, time, layout);
     badge(theme.working);
   } else if (cue.kind === 'owner_request') {
     drawOwnerRequest(ctx, room, project, theme, cue, time);
     badge(theme.waiting);
   } else if (cue.kind === 'revision' || cue.kind === 'approved') {
-    const color = cue.kind === 'revision' ? theme.waiting : theme.working;
-    const drop = Math.sin(progress * Math.PI) * 3;
-    ctx.strokeStyle = color;
-    ctx.save();
-    ctx.globalAlpha = .9;
-    ctx.lineWidth = .7;
-    ctx.beginPath();
-    ctx.rect(center[0] - 5, center[1] - 12 - drop, 10, 7);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(center[0], center[1] - 8.5 - drop, 2.2, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-    badge(color);
+    drawReviewBeat(ctx, project, theme, cue, time, layout, cue.kind === 'approved');
+    badge(cue.kind === 'revision' ? theme.waiting : theme.working);
   } else if (cue.kind === 'handoff') {
-    const split = Math.sin(progress * Math.PI) * 5;
-    ctx.lineWidth = .7;
-    for (const offset of [-split - 4, split + 4]) {
-      ctx.beginPath();
-      ctx.rect(center[0] + offset - 3, center[1] - 12, 6, 4.5);
-      ctx.stroke();
-    }
+    drawLeadHandoff(ctx, project, theme, cue, time, layout);
     badge(theme.waiting);
   } else if (cue.kind === 'discussion') {
-    for (const [index, offset] of [-9, 9].entries()) {
-      const bob = Math.sin(time / 300 + index) * 1.1;
-      ctx.lineWidth = .65;
-      ctx.beginPath();
-      ctx.rect(center[0] + offset - 4, center[1] - 14 + bob, 8, 5.5);
-      ctx.stroke();
-    }
+    drawDiscussionTravel(ctx, project, theme, cue, time, layout, false);
     badge(theme.working);
+  } else if (cue.kind === 'discussion_return') {
+    drawDiscussionTravel(ctx, project, theme, cue, time, layout, true);
   } else if (cue.kind === 'error') {
-    ctx.strokeStyle = theme.error;
-    ctx.lineWidth = .8;
-    ctx.beginPath();
-    ctx.arc(center[0], center[1] - 11, 3.4, 0, Math.PI * 2);
-    ctx.moveTo(center[0], center[1] - 13.2);
-    ctx.lineTo(center[0], center[1] - 10.4);
-    ctx.stroke();
+    drawErrorBeat(ctx, project, theme, cue, time, layout);
     badge(theme.error);
   } else if (cue.kind === 'authority') {
-    drawAuthorityHandoff(ctx, room, project, theme, cue, time);
+    drawAuthorityHandoff(ctx, room, project, theme, cue, time, layout);
     badge(theme.waiting);
-  } else if (cue.kind === 'multi_delivery' || cue.kind === 'final_delivery') {
-    // A finished task is walked over to the Owner, not floated across the plate.
-    if (room === 'owner') drawOwnerReport(ctx, project, theme, cue, time);
-    else if (cue.kind === 'final_delivery') drawDeliveryRun(ctx, project, theme, cue, time, layout, deliveryHome);
-    else {
-      ctx.lineWidth = .7;
-      for (let index = 0; index < 3; index += 1) {
-        const x = center[0] - 12 + index * 9 + progress * 14;
-        ctx.beginPath();
-        ctx.rect(x - 3, center[1] - 11 - index, 6, 4.5);
-        ctx.stroke();
-      }
-    }
+  } else if (cue.kind === 'multi_delivery') {
+    // I is an internal queue at this project's current supervisor/main-AI desk. On the
+    // first floor that desk is the small project's seat, never the Owner desk.
+    drawMultiDelivery(ctx, project, theme, cue, time, layout, occupants);
     badge(theme.working);
+  } else if (cue.kind === 'final_delivery') {
+    // A finished task is walked over to the Owner, not floated across the plate.
+    if (room === 'owner') drawOwnerReport(ctx, project, theme, cue, time, layout, supervisorProvider);
+    else drawDeliveryRun(ctx, project, theme, cue, time, layout, deliveryHome, courierHome, supervisorProvider);
+    badge(theme.working);
+  } else if (cue.kind === 'closing_report' || cue.kind === 'closing_departure') {
+    drawClosingProject(ctx, room, project, theme, cue, time, layout, occupants);
   } else if (cue.kind === 'cancelled') {
-    ctx.strokeStyle = theme.quiet;
-    ctx.lineWidth = .7;
-    ctx.beginPath();
-    ctx.moveTo(center[0] - 3, center[1] - 13);
-    ctx.lineTo(center[0] + 3, center[1] - 8);
-    ctx.moveTo(center[0] + 3, center[1] - 13);
-    ctx.lineTo(center[0] - 3, center[1] - 8);
-    ctx.stroke();
+    drawCancelledBeat(ctx, project, theme, cue, time, layout);
   }
   ctx.restore();
   void height;
@@ -837,33 +1404,6 @@ function elevatorCarFor(cue, theme) {
   };
 }
 
-/** "+N" in the corner when a floor holds more people than one plate can seat. */
-function drawOverflowNote(ctx, theme, room, model, annexIndex, project) {
-  let hidden = 0;
-  if (room === SHARED_FLOOR_KEY) {
-    hidden = Math.max(0, sharedFloorSessions(model).reduce((sum, session) => sum + session.population, 0) - FLOOR_WORKSTATIONS);
-  } else if (TEAM_ROOMS.includes(room)) {
-    const sessions = teamSessions(model, room);
-    const session = sessions[annexIndex];
-    if (!session) return;
-    // Two separate overflows: people this plate cannot seat, and whole teams that never
-    // got a floor. Clamp the first, or a small team cancels out the second.
-    hidden = Math.max(0, session.population - FLOOR_WORKSTATIONS);
-    if (annexIndex === sessions.length - 1) {
-      const all = sessionsForProvider(model?.providers?.[room]);
-      hidden += all.slice(sessions.length).reduce((sum, entry) => sum + entry.population, 0);
-    }
-  }
-  if (hidden <= 0) return;
-  const [x, y] = project(PLATE.gridWidth - 1.5, PLATE.gridDepth - 1);
-  ctx.save();
-  ctx.fillStyle = theme.soft;
-  ctx.font = '6px "Microsoft JhengHei", system-ui, sans-serif';
-  ctx.textAlign = 'right';
-  ctx.fillText(`+${hidden}`, x, y);
-  ctx.restore();
-}
-
 function deliveredCountForFloor(room, model, annexIndex = 0) {
   if (room === 'owner') {
     return TEAM_ROOMS.reduce((sum, provider) => sum + (model?.providers?.[provider]?.livePods || [])
@@ -877,37 +1417,16 @@ function deliveredCountForFloor(room, model, annexIndex = 0) {
 }
 
 function drawPersistentWorkMarkers(ctx, room, model, annexIndex, project, theme) {
-  const session = TEAM_ROOMS.includes(room) ? teamSessions(model, room)[annexIndex] : null;
-  if (session?.source === 'snapshot') {
-    const [x, y] = project(5.2, 6.8, .72);
-    ctx.save();
-    ctx.strokeStyle = theme.quiet;
-    ctx.fillStyle = theme.text;
-    ctx.lineWidth = .55;
-    ctx.setLineDash([1.2, 1]);
-    ctx.strokeRect(x - 13, y - 7, 26, 10);
-    ctx.setLineDash([]);
-    ctx.font = '4px "Microsoft JhengHei", system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('RECENT SNAPSHOT', x, y - .5);
-    ctx.restore();
-  }
-
   const delivered = deliveredCountForFloor(room, model, annexIndex);
   if (delivered <= 0) return;
   const [x, y] = room === 'owner'
     ? project(5.45, 2.7, 1.22)
     : project(2.15, 4.38, 1.08);
   ctx.save();
-  ctx.strokeStyle = theme.working;
+  ctx.strokeStyle = theme.stroke;
   ctx.lineWidth = .5;
   for (let index = 0; index < Math.min(3, delivered); index += 1) {
     ctx.strokeRect(x - 3 + index * .7, y - 3.2 - index * .65, 6, 3.2);
-  }
-  if (delivered > 3) {
-    ctx.fillStyle = theme.text;
-    ctx.font = '4px system-ui, sans-serif';
-    ctx.fillText(`+${delivered - 3}`, x + 4, y - 4);
   }
   ctx.restore();
 }
@@ -994,18 +1513,7 @@ export class RoomRenderer {
 
   draw(time = performance.now()) {
     const ctx = this.ctx;
-    const baseTheme = this.theme;
-    // Owner's permanent floor is the visual anchor. Its paper wash is deliberately
-    // opaque enough that lower floors and a busy wallpaper cannot bleed through it.
-    const theme = this.room === 'owner' && baseTheme.tone
-      ? {
-          ...baseTheme,
-          tone: {
-            ...baseTheme.tone,
-            plate: baseTheme.name === 'ink' ? 'rgb(246, 244, 238)' : 'rgb(228, 231, 236)'
-          }
-        }
-      : baseTheme;
+    const theme = this.theme;
     const mode = this.model?.effectiveMode || 'low';
     ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
     ctx.clearRect(0, 0, this.logicalWidth, this.logicalHeight);
@@ -1014,7 +1522,8 @@ export class RoomRenderer {
     ctx.lineJoin = 'round';
     ctx.setLineDash([]);
 
-    const phase = phaseAt(this.phase, time - this.phaseStartedAt);
+    const phaseElapsed = time - this.phaseStartedAt;
+    const phase = phaseAt(this.phase, phaseElapsed);
     if (this.phase === 'entering' && phase.done) this.phase = 'resident';
     const sceneTime = mode === 'dnd' || mode === 'important' ? 0 : time;
 
@@ -1029,15 +1538,24 @@ export class RoomRenderer {
     // one subagent team per plate, everyone else in the shared office.
     const allOccupants = occupantsFromModel(this.room, this.model, this.annexIndex);
     const occupants = allOccupants.filter((person) => !person.hidden);
-    const layout = officeLayout(this.room, podCountFor(this.room, this.model, occupants));
+    const layout = officeLayout(this.room, podCountFor(this.room, this.model, occupants), {
+      occupants: allOccupants,
+      model: this.model,
+      annexIndex: this.annexIndex
+    });
     const deliveryHome = cueOnThisFloor && cue?.kind === 'final_delivery'
       ? deliveryHomeForCue(this.room, this.model, this.annexIndex, layout, cue.event)
       : null;
-    const hideDeliveryMain = cueOnThisFloor && cue?.kind === 'final_delivery'
-      && (TEAM_ROOMS.includes(this.room) || [SINGLE_FLOOR_KEY, SHARED_FLOOR_KEY].includes(this.room));
+    const deliveryCourierHome = cueOnThisFloor && cue?.kind === 'final_delivery'
+      ? deliveryCourierHomeForCue(layout, allOccupants)
+      : null;
+    const deliverySupervisor = cueOnThisFloor && cue?.kind === 'final_delivery'
+      ? supervisorForEvent(this.model, cue.event)
+      : null;
+    const hideDeliveryMain = cueOnThisFloor && cue?.kind === 'final_delivery';
 
     if (!plan) {
-      drawGuides(ctx, project, theme, this.logicalHeight, phase.plate);
+      drawGuides(ctx, project, theme, this.logicalHeight, phase.plate, layout);
       drawElevator(ctx, project, theme, this.logicalHeight, {
         car: cueOnThisFloor ? elevatorCarFor(cue, theme) : null,
         progress: phase.plate
@@ -1046,7 +1564,8 @@ export class RoomRenderer {
     }
 
     if (plan) drawPlanPlate(ctx, project, theme, phase.plate);
-    else drawPlate(ctx, project, theme, phase.plate);
+    else drawPlate(ctx, project, theme, phase.plate, layout);
+    if (!plan && this.phase === 'entering') drawConstructionScene(ctx, project, theme, phaseElapsed, mode);
     if (plan && phase.plate >= 1) drawPlanStairs(ctx, project, theme, phase.furniture || 1);
 
     // Furniture and people share one painter's-algorithm pass: a figure seated behind a
@@ -1056,9 +1575,23 @@ export class RoomRenderer {
     const workingSpots = [];
 
     if (phase.figures > 0) {
+      const theatricalKinds = new Set(['arrival', 'handoff', 'discussion', 'discussion_return', 'error', 'revision', 'approved', 'owner_request', 'authority', 'multi_delivery', 'cancelled', 'closing_report', 'closing_departure']);
+      const cueSession = String(cue?.event?.sessionId || '');
+      const stagedOccupants = cueOnThisFloor && theatricalKinds.has(cue?.kind)
+        ? occupants.filter((person) => {
+          if (cue?.kind === 'closing_report' || cue?.kind === 'closing_departure') return false;
+          if (cue?.kind === 'owner_request' && person.waitingVisitor) return false;
+          // Meeting attendees are independent theatre figures. The project's real workers
+          // remain at their desks, even when this first-floor project emitted the cue.
+          if (cue?.kind === 'discussion' || cue?.kind === 'discussion_return') {
+            return !person.meeting;
+          }
+          return !(cueSession && String(person.sessionId || '').endsWith(`:${cueSession}`));
+        })
+        : occupants;
       const basePlacements = hideDeliveryMain
         ? deliveryPlacementsForCue(layout, allOccupants, cue.event)
-        : assignSeats(layout, occupants);
+        : assignSeats(layout, stagedOccupants);
       const placements = basePlacements.map((placement, order) => ({ ...placement, order }));
       const wallNow = Date.now();
       const posed = placements.map((placement) => {
@@ -1067,6 +1600,7 @@ export class RoomRenderer {
           mode,
           layout,
           room: this.room,
+          now: wallNow,
           idleCue: idleCueForModel(this.model, placement.person.id, wallNow)
         });
         if (placement.person.activity === 'unknown' && this.lastReliablePoses.has(placement.person.id)) {
@@ -1079,7 +1613,7 @@ export class RoomRenderer {
       // Figures are never shrunk. A floor is capped at six people plus the Owner, and the
       // seat plan keeps them apart at full size; shrinking was how the old plan bought
       // capacity it did not have, and it made the drawing worse to hide the overcrowding.
-      const figureScale = 1;
+      const figureScale = layout.figureScale || 1;
 
       for (const [index, actor] of posed.entries()) {
         const person = actor.placement.person;
@@ -1098,8 +1632,7 @@ export class RoomRenderer {
               drawPlanFigure(ctx, x, y, theme, {
                 identity: IDENTITY[person.provider] || IDENTITY[this.room] || null,
                 alpha: (actor.pose.alpha ?? 1) * appear,
-                facing: actor.pose.facing || 1,
-                tag: Boolean(actor.pose.tag)
+                facing: actor.pose.facing || 1
               });
               ctx.setLineDash([]);
               return;
@@ -1114,19 +1647,13 @@ export class RoomRenderer {
               carry: Boolean(actor.pose.carry),
               scale: figureScale
             });
+            if (person.resting) ctx.recordAnimationCue?.('rest', actor.pose.pose, { x, y, progress: actor.pose.workProgress || 0 });
             if (person.provider === 'owner') drawOwnerIdleProp(ctx, x, y, theme, actor.pose.ownerAction);
-            else drawWorkerIdleProp(ctx, x, y, theme, actor.pose.idleAction, actor.pose.idleProgress, actor.pose.facing);
-            ctx.setLineDash([]);
-            if (actor.pose.tag) drawQuestionTag(ctx, x, y - 14, theme, appear);
-            if (person.aggregated) {
-              ctx.save();
-              ctx.fillStyle = theme.soft;
-              ctx.globalAlpha = appear * .8;
-              ctx.font = '5px "Microsoft JhengHei", system-ui, sans-serif';
-              ctx.textAlign = 'center';
-              ctx.fillText('+', x + 4.5, y - 11);
-              ctx.restore();
+            else {
+              drawWorkProp(ctx, x, y, theme, actor.pose.workAction, actor.pose.workProgress, actor.pose.facing);
+              drawWorkerIdleProp(ctx, x, y, theme, actor.pose.idleAction, actor.pose.idleProgress, actor.pose.facing);
             }
+            ctx.setLineDash([]);
           }
         });
       }
@@ -1146,31 +1673,37 @@ export class RoomRenderer {
           : item;
         scene.push({
           depth: itemDepth(renderItem),
-          paint: () => (plan ? drawPlanItem : drawOfficeItem)(ctx, project, theme, renderItem, itemProgress)
+          paint: () => {
+            ctx.save();
+            ctx.globalAlpha *= renderItem.alpha ?? 1;
+            (plan ? drawPlanItem : drawOfficeItem)(ctx, project, theme, renderItem, itemProgress);
+            ctx.restore();
+          }
         });
       }
     }
 
     scene.sort((a, b) => a.depth - b.depth);
     for (const piece of scene) piece.paint();
-    if (phase.figures > 0) drawOverflowNote(ctx, theme, this.room, this.model, this.annexIndex, project);
+    if (!plan && this.phase === 'leaving') drawArchiveClosure(ctx, project, theme, phaseElapsed);
     if (phase.furniture > 0) drawPersistentWorkMarkers(ctx, this.room, this.model, this.annexIndex, project, theme);
 
-    if (cueOnThisFloor) drawSignatureCue(ctx, this.room, cue, theme, project, this.logicalHeight, time, layout, deliveryHome);
+    if (cueOnThisFloor) drawSignatureCue(
+      ctx,
+      this.room,
+      cue,
+      theme,
+      project,
+      this.logicalHeight,
+      time,
+      layout,
+      deliveryHome,
+      deliveryCourierHome,
+      deliverySupervisor?.provider || null,
+      allOccupants
+    );
 
-    const activity = floorStatusActivity(this.room, this.model, this.annexIndex);
-    const pulse = mode === 'dnd' || mode === 'important' || !['working', 'waiting_owner', 'failed'].includes(activity)
-      ? 1
-      : .45 + Math.abs(Math.sin(time / 620)) * .55;
-    // A team floor is named after its project, not its provider: that is what the Owner
-    // is actually watching (Owner, 2026-08-11). Long labels are cut, not wrapped.
-    const session = TEAM_ROOMS.includes(this.room) ? teamSessions(this.model, this.room)[this.annexIndex] : null;
-    const label = String(session?.label || '').trim();
-    const plateLabel = label ? label.slice(0, 12) : (PLATE_LABELS[this.room] || this.room);
-    drawNamePlate(ctx, theme, plateLabel, statusColor(theme, activity), this.logicalHeight - 4, {
-      alpha: Math.max(phase.plate, phase.figures),
-      pulse
-    });
+    void floorStatusActivity(this.room, this.model, this.annexIndex);
   }
 }
 

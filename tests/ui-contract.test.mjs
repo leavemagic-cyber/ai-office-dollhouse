@@ -14,6 +14,16 @@ test('Owner is a dedicated top root and never shares the work-floor container', 
   assert.match(main, /view\.room === 'owner' \? ownerRoot : floorRoot/);
 });
 
+test('the approved isometric dollhouse ignores a superseded stored plan preference', () => {
+  assert.match(main, /projection:\s*'axon'/);
+  assert.doesNotMatch(main, /projection:\s*stored\.projection/);
+});
+
+test('compacted discussion events preserve exact participants and the owner-selected chair', () => {
+  assert.match(main, /participantProviders:\s*event\.participantProviders/);
+  assert.match(main, /chairProvider:\s*event\.chairProvider\s*\|\|\s*null/);
+});
+
 test('window controls stay above every resize grip', () => {
   assert.match(css, /\.tower-bar\s*\{[^}]*z-index:\s*10/s);
   assert.match(css, /\.tower-grips\s*\{[^}]*z-index:\s*2/s);
@@ -31,4 +41,12 @@ test('startup publishes live events before optional external probes', () => {
   assert.ok(startup.indexOf('await broadcastModel()') < startup.indexOf('discovery.start()'));
   assert.ok(startup.indexOf('await broadcastModel()') < startup.indexOf('refreshExistingSnapshot()'));
   assert.ok(startup.indexOf('await broadcastModel()') < startup.indexOf('ensureIntegrationCoverage()'));
+});
+
+test('launching always reveals the overlay and a later shortcut click restores it', () => {
+  assert.match(main, /let manualReveal = true/);
+  assert.match(main, /const shouldShow = visibleCount > 0 \|\| manualReveal/);
+  assert.match(main, /bridge\.show\(\{ focus: force, force \}\)/);
+  assert.match(main, /bridge\.consumeShowRequest\(\)/);
+  assert.match(main, /bridge\.show\(\{ focus: true, force: true \}\)/);
 });
