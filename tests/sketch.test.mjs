@@ -229,6 +229,10 @@ test('dynamic first floor draws only occupied workstations and keeps the meeting
   assert.equal(idle.design, 'first-floor');
   assert.equal(idle.items.filter((item) => item.kind === 'desk' && item.monitors).length, 3, 'Owner plus two actual workers need exactly three workstations');
   assert.equal(idle.seats.filter((seat) => seat.role === 'meeting').length, 4, 'meeting room always keeps four shared chairs');
+  const ownerSeat = idle.seats.find((seat) => seat.role === 'owner');
+  assert.ok(ownerSeat.gx < 4.35 && ownerSeat.gy > 5.5, 'Owner stays in the approved lower-left office, clear of the entrance');
+  assert.ok(idle.items.some((item) => item.kind === 'meeting' && item.gx > 10), 'the permanent four-way room stays attached on the right');
+  assert.equal(idle.items.filter((item) => item.kind === 'desk' && item.pod === 0).length, 2, 'a small project occupies only its own upper-left slot');
   assert.ok(idle.items.filter((item) => item.kind === 'meeting').every((item) => item.alpha < .5), 'idle meeting room is faint');
 
   const active = officeLayout('owner', 1, { occupants: [owner, ...project, { id: 'guest', meeting: true }] });
@@ -443,6 +447,9 @@ test('sketch theme follows wallpaper luminance, then the system scheme', () => {
   // A dark wallpaper wins even when the system reports a light scheme.
   assert.equal(themeFor({ luminance: .1, prefersDark: false }).name, 'white');
   assert.equal(themeFor({ luminance: .1, lock: 'ink' }).name, 'ink');
+  const darkDesktop = themeFor({ luminance: .1 });
+  assert.equal(darkDesktop.tone.plate, 'rgba(28, 32, 37, .2)', 'fallback plate remains translucent over a working desktop');
+  assert.equal(darkDesktop.stroke, '#c7ccd0', 'fallback linework stays grayscale');
   for (const theme of Object.values(THEMES)) {
     for (const key of ['stroke', 'soft', 'guide', 'text', 'working', 'waiting', 'error', 'quiet']) {
       assert.match(theme[key], /^#[0-9a-f]{6}$/, `${theme.name}.${key} must be a hex colour`);

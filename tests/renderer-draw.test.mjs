@@ -28,6 +28,7 @@ function recordingCanvas() {
     restore() { Object.assign(this, stack.pop() || {}); },
     setTransform(...args) { calls.push(['setTransform', ...args]); },
     clearRect(...args) { calls.push(['clearRect', ...args]); },
+    drawImage(...args) { calls.push(['drawImage', ...args]); },
     setLineDash(...args) { calls.push(['setLineDash', ...args]); },
     beginPath() { calls.push(['beginPath']); },
     closePath() { calls.push(['closePath']); },
@@ -145,6 +146,28 @@ function animationMarks(calls, category = null) {
 function geometryCount(calls) {
   return calls.filter(([name]) => !['animation', 'setTransform', 'clearRect', 'setLineDash', 'beginPath', 'closePath', 'stroke', 'fill', 'clip'].includes(name)).length;
 }
+
+test('approved transparent scene plate keeps furniture static but people event-driven', () => {
+  const now = Date.now();
+  const canvas = recordingCanvas();
+  const renderer = new RoomRenderer({ canvas, room: 'owner', annexIndex: 0 });
+  renderer.setTheme({ luminance: .12, tone: true });
+  renderer.setPhase('resident', 0);
+  renderer.sceneAssetSource = '/scenes/first-floor-static.png';
+  renderer.sceneAsset = { complete: true, naturalWidth: 1600, naturalHeight: 1000 };
+  renderer.setModel(modelAt(now, []), false);
+  const realNow = Date.now;
+  Date.now = () => now;
+  try { renderer.draw(2_000); } finally { Date.now = realNow; }
+  assert.equal(canvas.context.calls.filter(([name]) => name === 'drawImage').length, 1, 'the approved scene image is painted once');
+  assert.ok(figureHeads(canvas.context.calls) >= 1, 'live lifecycle occupants are layered over the static furniture');
+  assert.equal(canvas.context.calls.filter(([name]) => name === 'setLineDash').some(([, dash]) => dash?.length > 0), false, 'floating floors have no dashed connector');
+});
+
+test('legacy fallback also has no inter-floor dashed connector or elevator rail', () => {
+  const calls = actualDraw([]);
+  assert.equal(calls.filter(([name]) => name === 'setLineDash').some(([, dash]) => dash?.length > 0), false);
+});
 
 test('A-J and cancellation cues draw human motion through RoomRenderer.draw', () => {
   const cases = [

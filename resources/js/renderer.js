@@ -12,15 +12,11 @@ import {
 import {
   assignSeats,
   clamp,
-  drawCrane,
   drawConstructionScene,
   drawArchiveClosure,
-  drawElevator,
   drawFigure,
-  drawGuides,
   drawOfficeItem,
   drawPlate,
-  drawStairs,
   ease,
   IDENTITY,
   itemDepth,
@@ -58,6 +54,62 @@ export const SINGLE_FLOOR_KEY = 'all';
 export const SINGLE_FLOOR_CAPACITY = 6;
 
 const TEAM_ROOMS = ['codex', 'claude', 'gemini', 'grok'];
+
+// The two approved office drawings are transparent scene plates.  They deliberately
+// contain no people: every person shown above them is produced from a live lifecycle
+// event, never baked into a decorative image.  These anchors place the live line-art
+// actor at its matching chair while retaining a small local coordinate system for the
+// existing work, handoff, idle and delivery motions.
+const FIRST_FLOOR_SCENE_ANCHORS = Object.freeze([
+  { gx: 2.15, gy: 7.05, x: 58.0, y: 65.0 }, // Owner, lower left
+  { gx: 2.65, gy: 3.4, x: 60.0, y: 35.0 },
+  { gx: 1.15, gy: 4.4, x: 45.5, y: 40.5 },
+  { gx: 7.05, gy: 6.4, x: 95.0, y: 64.5 },
+  { gx: 8.45, gy: 7.28, x: 111.0, y: 65.0 },
+  { gx: 7.0, gy: 3.4, x: 95.0, y: 35.0 },
+  { gx: 8.42, gy: 4.4, x: 111.0, y: 40.5 },
+  { gx: 12.05, gy: 3.55, x: 133.0, y: 36.0 },
+  { gx: 12.05, gy: 7.25, x: 133.0, y: 57.0 },
+  { gx: 10.45, gy: 5.35, x: 123.0, y: 48.0 },
+  { gx: 13.55, gy: 5.35, x: 145.0, y: 48.0 }
+]);
+
+const EXECUTION_SCENE_ANCHORS = Object.freeze([
+  { gx: 2.7, gy: 2.35, x: 60.0, y: 29.0 },
+  { gx: 6.85, gy: 2.35, x: 93.0, y: 29.0 },
+  { gx: 2.7, gy: 4.45, x: 60.0, y: 44.0 },
+  { gx: 6.85, gy: 4.45, x: 93.0, y: 44.0 },
+  { gx: 2.7, gy: 6.55, x: 60.0, y: 60.0 },
+  { gx: 6.85, gy: 6.55, x: 93.0, y: 60.0 },
+  { gx: 1.35, gy: 8.65, x: 56.0, y: 75.0 }, // supervisor behind S3
+  { gx: 10.65, gy: 5.25, x: 122.0, y: 49.0 },
+  { gx: 12.0, gy: 6.25, x: 135.0, y: 59.0 },
+  { gx: 11.2, gy: 7.65, x: 132.0, y: 73.0 }
+]);
+
+function sceneImageBox(image, logicalWidth, logicalHeight) {
+  const ratio = Number(image?.naturalWidth || image?.width) / Number(image?.naturalHeight || image?.height);
+  if (!Number.isFinite(ratio) || ratio <= 0) return { x: 0, y: 0, width: logicalWidth, height: logicalHeight };
+  const width = Math.min(logicalWidth, logicalHeight * ratio);
+  const height = width / ratio;
+  return { x: (logicalWidth - width) / 2, y: (logicalHeight - height) / 2, width, height };
+}
+
+function sceneProjector(room, box) {
+  const anchors = room === 'owner' ? FIRST_FLOOR_SCENE_ANCHORS : EXECUTION_SCENE_ANCHORS;
+  return (gx, gy, gz = 0) => {
+    const nearest = anchors.reduce((best, anchor) => {
+      const distance = (anchor.gx - gx) ** 2 + (anchor.gy - gy) ** 2;
+      return distance < best.distance ? { anchor, distance } : best;
+    }, { anchor: anchors[0], distance: Number.POSITIVE_INFINITY }).anchor;
+    // The original coordinate delta is intentionally compact: it preserves a readable
+    // walking/typing action near the chair without letting a cue drift into another
+    // fixed desk in the approved reference art.
+    const localX = (gx - nearest.gx) * 5.6;
+    const localY = (gy - nearest.gy) * 4.6 - gz * 3.2;
+    return [box.x + nearest.x * (box.width / 160) + localX, box.y + nearest.y * (box.height / 100) + localY];
+  };
+}
 
 function statusColor(theme, activity) {
   if (activity === 'waiting_owner') return theme.waiting;
@@ -1388,22 +1440,6 @@ function drawSignatureCue(ctx, room, cue, theme, project, height, time, layout, 
   void height;
 }
 
-function elevatorCarFor(cue, theme) {
-  if (!cue) return null;
-  if (!['arrival', 'owner_request', 'discussion', 'final_delivery'].includes(cue.kind)) return null;
-  const up = cue.kind === 'owner_request' || cue.kind === 'final_delivery';
-  const travel = cue.kind === 'owner_request'
-    ? ease(clamp((cue.progress - .34) / .24))
-    : cue.kind === 'final_delivery'
-      ? ease(clamp((cue.progress - .72) / .12))
-      : ease(clamp(cue.progress * 2));
-  return {
-    position: up ? 1 - travel : travel,
-    occupied: true,
-    color: cue.kind === 'owner_request' ? theme.waiting : theme.working
-  };
-}
-
 function deliveredCountForFloor(room, model, annexIndex = 0) {
   if (room === 'owner') {
     return TEAM_ROOMS.reduce((sum, provider) => sum + (model?.providers?.[provider]?.livePods || [])
@@ -1448,6 +1484,8 @@ export class RoomRenderer {
     this.phase = 'entering';
     this.phaseStartedAt = typeof performance === 'object' ? performance.now() : 0;
     this.projection = 'axon';
+    this.sceneAssetSource = null;
+    this.sceneAsset = null;
     this.lastReliablePoses = new Map();
     this.resize(canvas.width, canvas.height);
   }
@@ -1485,6 +1523,29 @@ export class RoomRenderer {
   /** Additive: 'axon' is the 2:1 cutaway plate, 'plan' is the flat architectural plan. */
   setProjection(projection) {
     this.projection = projection === 'plan' ? 'plan' : 'axon';
+  }
+
+  /**
+   * Load a transparent, people-free approved room plate.  The visual source never
+   * contains a static actor, so a stale snapshot cannot look like a live worker.
+   * The guarded Image lookup keeps the deterministic Node renderer tests DOM-free.
+   */
+  setSceneAsset(source) {
+    if (source === this.sceneAssetSource) return;
+    this.sceneAssetSource = source || null;
+    this.sceneAsset = null;
+    if (!this.sceneAssetSource || typeof Image !== 'function') return;
+    const image = new Image();
+    image.decoding = 'async';
+    image.onload = () => {
+      if (this.sceneAssetSource !== source) return;
+      this.sceneAsset = image;
+      this.draw(typeof performance === 'object' ? performance.now() : 0);
+    };
+    image.onerror = () => {
+      if (this.sceneAssetSource === source) this.sceneAsset = null;
+    };
+    image.src = source;
   }
 
   start() {
@@ -1528,9 +1589,18 @@ export class RoomRenderer {
     const sceneTime = mode === 'dnd' || mode === 'important' ? 0 : time;
 
     const plan = this.projection === 'plan';
-    const project = plan
-      ? planProjector()
-      : projector({ centerX: PLATE.centerX, top: PLATE.top, unit: PLATE.unit });
+    const assetReady = Boolean(this.sceneAsset?.complete && (this.sceneAsset.naturalWidth || this.sceneAsset.width));
+    // A requested scene remains transparent while its image decodes; we never flash the
+    // superseded hand-drawn room behind the fixed approved composition.
+    const sceneMode = !plan && Boolean(this.sceneAssetSource);
+    const assetBox = sceneMode
+      ? sceneImageBox(this.sceneAsset, this.logicalWidth, this.logicalHeight)
+      : null;
+    const project = sceneMode
+      ? sceneProjector(this.room, assetBox)
+      : plan
+        ? planProjector()
+        : projector({ centerX: PLATE.centerX, top: PLATE.top, unit: PLATE.unit });
     const now = Date.now();
     const cue = globalChoreography.current(now);
     const cueOnThisFloor = cueAppearsOnFloor(cue, { room: this.room, annexIndex: this.annexIndex }, this.model);
@@ -1554,18 +1624,18 @@ export class RoomRenderer {
       : null;
     const hideDeliveryMain = cueOnThisFloor && cue?.kind === 'final_delivery';
 
-    if (!plan) {
-      drawGuides(ctx, project, theme, this.logicalHeight, phase.plate, layout);
-      drawElevator(ctx, project, theme, this.logicalHeight, {
-        car: cueOnThisFloor ? elevatorCarFor(cue, theme) : null,
-        progress: phase.plate
-      });
-      if (phase.crane > 0) drawCrane(ctx, project, theme, phase.crane);
+    if (sceneMode) {
+      if (assetReady && phase.plate > 0) {
+        ctx.save();
+        ctx.globalAlpha *= phase.plate;
+        ctx.drawImage(this.sceneAsset, assetBox.x, assetBox.y, assetBox.width, assetBox.height);
+        ctx.restore();
+      }
+    } else if (plan) drawPlanPlate(ctx, project, theme, phase.plate);
+    else {
+      drawPlate(ctx, project, theme, phase.plate, layout);
+      if (this.phase === 'entering') drawConstructionScene(ctx, project, theme, phaseElapsed, mode);
     }
-
-    if (plan) drawPlanPlate(ctx, project, theme, phase.plate);
-    else drawPlate(ctx, project, theme, phase.plate, layout);
-    if (!plan && this.phase === 'entering') drawConstructionScene(ctx, project, theme, phaseElapsed, mode);
     if (plan && phase.plate >= 1) drawPlanStairs(ctx, project, theme, phase.furniture || 1);
 
     // Furniture and people share one painter's-algorithm pass: a figure seated behind a
@@ -1659,7 +1729,7 @@ export class RoomRenderer {
       }
     }
 
-    if (phase.furniture > 0) {
+    if (phase.furniture > 0 && !sceneMode) {
       for (const [index, item] of layout.items.entries()) {
         const itemProgress = itemProgressFor(index, layout.items.length, phase.furniture);
         if (itemProgress <= 0) continue;
@@ -1685,7 +1755,7 @@ export class RoomRenderer {
 
     scene.sort((a, b) => a.depth - b.depth);
     for (const piece of scene) piece.paint();
-    if (!plan && this.phase === 'leaving') drawArchiveClosure(ctx, project, theme, phaseElapsed);
+    if (!plan && !sceneMode && this.phase === 'leaving') drawArchiveClosure(ctx, project, theme, phaseElapsed);
     if (phase.furniture > 0) drawPersistentWorkMarkers(ctx, this.room, this.model, this.annexIndex, project, theme);
 
     if (cueOnThisFloor) drawSignatureCue(

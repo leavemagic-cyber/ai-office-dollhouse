@@ -548,6 +548,12 @@ async function startTower() {
     });
     renderer.setTheme(sketchTheme);
     renderer.setProjection(settings.projection);
+    // These are the two owner-approved, text-free room compositions.  Their floors and
+    // walls are transparent; only grayscale furniture is baked in.  Live actors remain
+    // exclusively in RoomRenderer's event-driven draw pass above the image.
+    renderer.setSceneAsset(spec.room === 'owner'
+      ? 'scenes/first-floor-static.png'
+      : 'scenes/execution-floor-static.png');
     renderer.setPhase('entering', performance.now());
     const view = { ...spec, card, head, name, status, source, clock, caret, canvas, renderer, inView: true, leavingTimer: null, orderIndex: floorViews.size };
     floorViews.set(spec.key, view);
@@ -799,6 +805,13 @@ async function startTower() {
     settings.overlayWidth = nextWidth;
     synchronizeOverlayWindow(activeFloorCount);
   };
+  const nudgeResize = (amount) => {
+    const nextWidth = boundedInteger(settings.overlayWidth + amount, settings.overlayWidth, MIN_OVERLAY_WIDTH, MAX_OVERLAY_WIDTH);
+    if (nextWidth === settings.overlayWidth) return;
+    settings.overlayWidth = nextWidth;
+    synchronizeOverlayWindow(activeFloorCount);
+    saveSettings(settings);
+  };
   const completeResize = (event) => {
     if (!resizeState || event.pointerId !== resizeState.pointerId) return;
     try { resizeState.element.releasePointerCapture(event.pointerId); } catch { /* already released */ }
@@ -811,6 +824,25 @@ async function startTower() {
     grip.addEventListener('pointerup', completeResize);
     grip.addEventListener('pointercancel', completeResize);
   }
+
+  // The translucent edge grips are deliberately passive over working windows.  This
+  // shortcut gives the visible corner handle a precise alternative: focus it and use
+  // arrows/+/- or hold Ctrl while scrolling on the title bar/handle.
+  const resizeButton = document.getElementById('tower-resize');
+  resizeButton.addEventListener('keydown', (event) => {
+    const grow = ['ArrowUp', 'ArrowRight', '+', '='];
+    const shrink = ['ArrowDown', 'ArrowLeft', '-'];
+    if (!grow.includes(event.key) && !shrink.includes(event.key)) return;
+    event.preventDefault();
+    nudgeResize(grow.includes(event.key) ? 16 : -16);
+  });
+  const wheelResize = (event) => {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    nudgeResize(event.deltaY < 0 ? 16 : -16);
+  };
+  resizeButton.addEventListener('wheel', wheelResize, { passive: false });
+  document.getElementById('tower-drag').addEventListener('wheel', wheelResize, { passive: false });
 
   document.getElementById('tower-drag').addEventListener('pointerup', (event) => {
     if (event.target.closest('.window-actions')) return;

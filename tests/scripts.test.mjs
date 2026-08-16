@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lastJsonLine } from '../resources/js/native-bridge.js';
+import { applyOfficeEvent, createInitialState } from '../resources/js/domain.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
@@ -26,6 +27,17 @@ function runScript(name, args = [], options = {}) {
 
 test('lastJsonLine ignores harmless leading output', () => {
   assert.deepEqual(lastJsonLine('notice\n{"ok":true}\n'), { ok: true });
+});
+
+test('release bundle keeps only the approved no-person scene plates', () => {
+  const config = JSON.parse(readFileSync(join(root, 'neutralino.config.json'), 'utf8'));
+  const excluded = new RegExp(config.cli.resourcesExclude);
+  assert.equal(excluded.test('resources/scenes/first-floor-transparent.png'), true,
+    'temporary scene studies with static people must never enter the native bundle');
+  assert.equal(excluded.test('resources/scenes/first-floor-static.png'), false,
+    'the approved no-person scene plate must remain in the native bundle');
+  assert.equal(existsSync(join(root, 'resources', 'scenes', 'first-floor-static.png')), true);
+  assert.equal(existsSync(join(root, 'resources', 'scenes', 'execution-floor-static.png')), true);
 });
 
 test('discovery returns bounded presence data without task content', { skip: process.platform !== 'win32' }, () => {
@@ -225,14 +237,75 @@ test('hook relays only present subagent stop as terminal when the payload proves
   }
 });
 
+test('a Codex hook-shaped payload survives relay -> domain and becomes a live pod, never a snapshot phantom', { skip: process.platform !== 'win32' }, () => {
+  const relay = join(root, 'scripts', 'relay', 'AIOfficeHookRelay.exe');
+  assert.equal(existsSync(relay), true, 'run scripts/build-relay.ps1 first');
+  const dataDirectory = mkdtempSync(join(tmpdir(), 'ai-office-codex-chain-'));
+  const sessionId = 'codex-chain-session';
+  const runRelay = (hookEventName, extra = {}) => spawnSync(relay, ['codex', 'auto'], {
+    cwd: root,
+    encoding: 'utf8',
+    input: JSON.stringify({
+      session_id: sessionId,
+      hook_event_name: hookEventName,
+      cwd: 'C:\\Work\\Office Animation',
+      timestamp: '2026-08-17T00:00:00Z',
+      ...extra
+    }),
+    env: { ...process.env, AI_OFFICE_DATA_DIR: dataDirectory }
+  });
+
+  const started = runRelay('SessionStart');
+  assert.equal(started.status, 0, started.stderr);
+  const prompted = runRelay('UserPromptSubmit');
+  assert.equal(prompted.status, 0, prompted.stderr);
+
+  // This exercises the documented Codex lifecycle payload shape through the
+  // compiled relay; nothing here is a synthetic livePod or hand-built domain object.
+  const rawEvents = readFileSync(join(dataDirectory, 'live-events.ndjson'), 'utf8')
+    .trim().split(/\r?\n/).map((line) => JSON.parse(line));
+  assert.equal(rawEvents.length, 2, 'one relay-emitted event per hook invocation');
+  assert.ok(rawEvents.every((relayEvent) => relayEvent.provider === 'codex'));
+  assert.ok(rawEvents.every((relayEvent) => relayEvent.observationTier === 'A'),
+    'a hook payload must be Tier-A structured evidence, not a process/snapshot guess');
+
+  // The relay never stores the raw session id (see the sibling privacy test above);
+  // it emits a one-way hash instead, and that hash is what domain state keys pods by.
+  assert.match(rawEvents[0].sessionId, /^[a-f0-9]{24}$/);
+  assert.ok(rawEvents.every((relayEvent) => relayEvent.sessionId === rawEvents[0].sessionId),
+    'the same real session must hash to the same pod key across both hook calls');
+
+  const state = createInitialState(Date.now());
+  for (const relayEvent of rawEvents) applyOfficeEvent(state, relayEvent, relayEvent.timestamp);
+
+  const pod = state.teams.codex.pods[rawEvents[0].sessionId];
+  assert.ok(pod, 'the relay -> domain chain must create a live pod keyed by the relay-emitted session id');
+  assert.equal(pod.lifecycle, 'active');
+
+  // A snapshot-only entry (Codex's own local chat-history mtime scan, e.g. the
+  // "解決拍照煩惱" thread label) never goes through applyOfficeEvent at all, so it
+  // can only ever surface as snapshotWork in the UI layer -- it must not be able
+  // to appear in state.teams.codex.pods, which is reserved for observed events.
+  assert.equal('snapshot-only-phantom' in state.teams.codex.pods, false);
+});
+
 test('integration installer backs up and merges idempotently in an isolated root', { skip: process.platform !== 'win32' }, () => {
   const configRoot = mkdtempSync(join(tmpdir(), 'ai-office-config-'));
-  const codexPath = join(configRoot, '.codex', 'hooks.json');
+  // Codex 0.146.0 reads user command hooks from ~/.codex/hooks/hooks.json. Seed it with an
+  // unrelated pre-existing hook to prove the installer merges rather than clobbers.
+  const codexPath = join(configRoot, '.codex', 'hooks', 'hooks.json');
+  // An obsolete root hook file may have been created by an earlier build. The
+  // installer must clean only its own entry from it.
+  const legacyCodexPath = join(configRoot, '.codex', 'hooks.json');
   const claudePath = join(configRoot, '.claude', 'settings.json');
   mkdirSync(dirname(codexPath), { recursive: true });
+  mkdirSync(dirname(legacyCodexPath), { recursive: true });
   mkdirSync(dirname(claudePath), { recursive: true });
   writeFileSync(codexPath, JSON.stringify({
     hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'existing-codex-hook' }] }] }
+  }, null, 2));
+  writeFileSync(legacyCodexPath, JSON.stringify({
+    hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'C:\\stale\\AIOfficeHookRelay.exe codex auto' }] }] }
   }, null, 2));
   writeFileSync(claudePath, JSON.stringify({
     permissions: { defaultMode: 'default' },
@@ -244,15 +317,22 @@ test('integration installer backs up and merges idempotently in an isolated root
   assert.equal(first.status, 0, first.stderr);
   const firstResult = lastJsonLine(first.stdout);
   assert.equal(firstResult.ok, true);
-  assert.match(firstResult.results.find((item) => item.provider === 'codex').path, /[\\/]\.codex[\\/]hooks\.json$/i);
+  const codexResult = firstResult.results.find((item) => item.provider === 'codex');
+  assert.match(codexResult.path, /[\\/]\.codex[\\/]hooks[\\/]hooks\.json$/i);
+  assert.equal(codexResult.legacyMigrated, true, 'installer must report that it cleaned the obsolete root hook file');
   const second = runScript('install-integrations.ps1', args);
-  assert.equal(second.status, 0, second.stderr);
+  assert.equal(second.status, 0, `${second.stderr}\n${second.stdout}`);
 
   const claude = JSON.parse(readFileSync(claudePath, 'utf8'));
   const codex = JSON.parse(readFileSync(codexPath, 'utf8'));
   const codexCommands = codex.hooks.SessionStart.flatMap((group) => group.hooks.map((hook) => hook.command));
   assert.ok(codexCommands.includes('existing-codex-hook'));
   assert.equal(codexCommands.filter((command) => command.includes('AIOfficeHookRelay.exe')).length, 1);
+  const legacyCodex = JSON.parse(readFileSync(legacyCodexPath, 'utf8'));
+  const legacyGroups = legacyCodex.hooks.SessionStart || [];
+  const legacyCommands = legacyGroups.flatMap((group) => group.hooks.map((hook) => hook.command));
+  assert.equal(legacyCommands.some((command) => command.includes('AIOfficeHookRelay.exe')), false,
+    'the obsolete root hook file must not still claim the integration is installed there');
   const commands = claude.hooks.SessionStart.flatMap((group) => group.hooks.map((hook) => hook.command));
   assert.ok(commands.includes('existing-safe-hook'));
   assert.equal(commands.filter((command) => command.includes('AIOfficeHookRelay.exe')).length, 1);
@@ -280,11 +360,32 @@ test('integration installer backs up and merges idempotently in an isolated root
   assert.ok(readdirSync(dirname(claudePath)).some((name) => name.startsWith('settings.json.bak_ai_office_')));
 
   const expected = [
-    join(configRoot, '.codex', 'hooks.json'),
+    join(configRoot, '.codex', 'hooks', 'hooks.json'),
     join(configRoot, '.gemini', 'settings.json'),
     join(configRoot, '.grok', 'hooks', 'ai-office-dollhouse.json')
   ];
   expected.forEach((path) => assert.equal(existsSync(path), true, path));
+});
+
+test('status reports codex as installed only via the supported nested hooks path, never the obsolete root path alone', { skip: process.platform !== 'win32' }, () => {
+  const configRoot = mkdtempSync(join(tmpdir(), 'ai-office-status-'));
+  const legacyCodexPath = join(configRoot, '.codex', 'hooks.json');
+  mkdirSync(dirname(legacyCodexPath), { recursive: true });
+  // An obsolete root file that merely looks installed must not be reported as
+  // installed: the CLI reads the nested user source on this installed version.
+  writeFileSync(legacyCodexPath, JSON.stringify({
+    hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'C:\\stale\\AIOfficeHookRelay.exe codex auto' }] }] }
+  }, null, 2));
+  const staleStatus = lastJsonLine(runScript('install-integrations.ps1', ['-Provider', 'codex', '-Action', 'status', '-ConfigRoot', configRoot]).stdout);
+  const staleResult = staleStatus.results[0];
+  assert.equal(staleResult.installed, false, 'a marker only in the obsolete root path must not read as installed');
+  assert.equal(staleResult.legacyDetected, true);
+
+  runScript('install-integrations.ps1', ['-Provider', 'codex', '-Action', 'install', '-ConfigRoot', configRoot]);
+  const freshStatus = lastJsonLine(runScript('install-integrations.ps1', ['-Provider', 'codex', '-Action', 'status', '-ConfigRoot', configRoot]).stdout);
+  const freshResult = freshStatus.results[0];
+  assert.equal(freshResult.installed, true);
+  assert.match(freshResult.path, /[\\/]\.codex[\\/]hooks[\\/]hooks\.json$/i);
 });
 
 test('integration installer serializes newly created hook groups as arrays', { skip: process.platform !== 'win32' }, () => {
@@ -294,7 +395,7 @@ test('integration installer serializes newly created hook groups as arrays', { s
   assert.equal(lastJsonLine(result.stdout).ok, true);
 
   const settings = [
-    join(configRoot, '.codex', 'hooks.json'),
+    join(configRoot, '.codex', 'hooks', 'hooks.json'),
     join(configRoot, '.claude', 'settings.json'),
     join(configRoot, '.gemini', 'settings.json'),
     join(configRoot, '.grok', 'hooks', 'ai-office-dollhouse.json')
