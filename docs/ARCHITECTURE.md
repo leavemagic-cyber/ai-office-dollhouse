@@ -3,14 +3,22 @@
 ## 資料模型
 
 ```text
-Owner
-├─ 每一個真實 session → Provider 隔離的獨立樓層
-└─ 跨 Provider 討論 → 入口大廳
+第一層
+├─ Owner
+├─ 最多三個 1–2 人小專案
+└─ 永久四席會談室
+
+獨立執行層（逐專案向上增加）
+├─ 一位執行時主管
+├─ 最多六位工作人員
+└─ 最多三位已完成工作人員留在同層休息區
 ```
 
-Owner 是永久、獨立且最大的頂層決策室，不會因沒有請示而消失，也不會合併到工作樓層。每一個有可靠生命週期證據的 session 各自擁有 Provider 隔離樓層，任何單一樓層都不混放無關 Provider。
+第一層永久存在。Owner 坐前左且避開入口；小專案依序使用後左、前右、後右，空位不畫桌椅。沒有小專案時 Owner 使用較大的辦公配置。會談室固定在右側，未使用時以淡線呈現。
 
-工作樓層固定有六張獨立桌，每桌包含自己的低屏風和螢幕。單層最多顯示六人，更多人以精確 `+N` 數量摘要呈現，人偶維持原尺寸。每個 Provider 最多同時繪製十二個 session 樓層，超出的 session 與 cue 收斂到該 Provider 最後一層，不會被錯放到共用辦公層。
+專案一達三人，或成為同時存在的第四個專案，就取得自己的執行層且在結束前不搬回第一層。執行層每層只放一個專案；主管位在 S3 後方偏左，六個工作位採兩列三排並向前配置。真實人數再大也不顯示 `+N`，只呈現一位主管、六位仍在工作的代表與最多三位已完成代表在右側休息。
+
+主 AI 永遠是 APP；主管是執行時角色，Codex、Claude、Grok 或 Gemini CLI 都可能擔任。二、三、四方會談只使用事件明列的參與者與主席，與當下執行專案無關；Owner 留在辦公位等待結果。
 
 ## 事件來源
 
@@ -21,21 +29,21 @@ Presence 不會生成人員，程序結束也不代表任務完成。來源中�
 
 ## 顯示流程
 
-`floorSpecsForModel(..., { activeOnly: true })` 永遠保留 Owner 頂層，只在有可靠人口或活躍討論時加入工作樓層；不會為對不上 session 的事件開出空白共用辦公層。
+`floorSpecsForModel(..., { activeOnly: true })` 永遠保留第一層，只為已升層或超出第一層容量的真實專案建立獨立執行層；對不上 session 的事件不會憑空開樓層。
 
-Canvas 提供 2:1 軸測與平面圖兩種投影。人物、家具和 cue 共用深度排序，樓層切換使用本機時間軸，不需要模型生成動畫。
+Canvas 使用 2:1 軸測小尺寸堆疊。人物、家具和 cue 共用深度排序，樓層切換使用本機時間軸，不需要模型生成動畫。畫面只保留灰階建築線稿和人物胸口小色點，不繪製專案、角色、樓層、數量或說明文字。
 
-Windows 上的滑鼠穿透由 `WS_EX_TRANSPARENT` 控制。狀態機只接受原生層回傳的確認結果，失敗不會被記成已恢復，隱藏、最小化、游標讀取失敗與視窗移動都會觸發清除或重新量測。
+Windows 上的滑鼠穿透由低優先序 `AIOfficeClickThrough.exe` 守衛 `WS_EX_TRANSPARENT`。守衛每 40ms 直接讀取同一 DPI 座標系的游標與視窗位置；動畫區穿透，頂端控制列和縮放邊緣保持可操作，視窗隱藏、最小化或主程式結束時自動清除旗標並退出。
 
 ## 主要元件
 
 - `scripts/relay/AIOfficeHookRelay.exe` 是短生命、fail-open 的本機事件轉接器
+- `scripts/click-through/AIOfficeClickThrough.exe` 是跟隨主程式生命週期的低優先序滑鼠穿透守衛
 - `resources/js/discovery.js` 以有界切片讀取 NDJSON，並處理部分行、輪替與截斷
 - `resources/js/domain.js` 負責事件正規化、去重、session 關聯和 TTL 清理
 - `resources/js/floor-layout.js` 決定樓層語意、人口上限與 cue 目的地
 - `resources/js/sketch.js` 定義辦公室、人偶和兩種投影的原創繪圖語言
 - `resources/js/renderer.js` 組合場景、座位、動畫和數量摘要
-- `resources/js/click-through.js` 保存原生確認過的穿透狀態
 - `resources/js/native-bridge.js` 只允許固定腳本名和白名單參數
 
 ## 資源邊界

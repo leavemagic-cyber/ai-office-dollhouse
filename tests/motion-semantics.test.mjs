@@ -6,8 +6,10 @@ import {
   deliveryPlacementsForCue,
   deliveryReturnFacing,
   drawWorkerIdleProp,
+  drawWorkProp,
   idleCueForModel,
   isCueMainPerson,
+  P4_ACTIONS,
   occupantsFromModel,
   P4_SLOT_MS,
   poseFor,
@@ -204,6 +206,37 @@ test('P4 props mirror in the same local frame as a left-facing worker', () => {
   assert.deepEqual(transforms, [['translate', 20, 30], ['scale', -1, 1], ['translate', -20, -30]]);
 });
 
+test('the complete design-canon idle and structured-work prop inventories draw without labels', () => {
+  assert.deepEqual(P4_ACTIONS, [
+    'daze', 'drink', 'read', 'water', 'blanket', 'pet', 'robot',
+    'elevator_wait', 'stickers', 'photo'
+  ]);
+  const makeContext = () => {
+    let marks = 0;
+    return {
+      get marks() { return marks; },
+      save() {}, restore() {}, translate() {}, scale() {}, beginPath() {}, closePath() {},
+      moveTo() { marks += 1; }, lineTo() { marks += 1; }, rect() { marks += 1; },
+      arc() { marks += 1; }, ellipse() { marks += 1; }, quadraticCurveTo() { marks += 1; },
+      bezierCurveTo() { marks += 1; }, stroke() { marks += 1; }, fill() { marks += 1; },
+      set strokeStyle(value) {}, set fillStyle(value) {}, set lineWidth(value) {}
+    };
+  };
+  for (const action of P4_ACTIONS) {
+    const ctx = makeContext();
+    drawWorkerIdleProp(ctx, 20, 30, { stroke: '#aaa', text: '#aaa' }, action, .5, 1);
+    assert.ok(ctx.marks > 0, `${action} must draw an actual prop`);
+  }
+  for (const action of [
+    'coding', 'research', 'search', 'test', 'git', 'merge_conflict', 'build',
+    'document', 'night', 'context', 'external_wait', 'rate_limit', 'review', 'whiteboard', 'crash'
+  ]) {
+    const ctx = makeContext();
+    drawWorkProp(ctx, 20, 30, { stroke: '#aaa' }, action, .5, 1);
+    assert.ok(ctx.marks > 0, `${action} must draw an actual work vignette`);
+  }
+});
+
 test('recent snapshots have a static floor contract but zero people', () => {
   const model = {
     providers: {
@@ -213,4 +246,69 @@ test('recent snapshots have a static floor contract but zero people', () => {
   };
   assert.deepEqual(occupantsFromModel('codex', model, 0), []);
   assert.equal(totalOccupants(model), 0);
+});
+
+test('runtime acting lead decides the execution-floor supervisor seat regardless of provider', () => {
+  const model = {
+    providers: {
+      codex: { livePods: [{
+        id: 'pod:codex:mixed', activity: 'running', floorAssignment: 'execution', actingLeadAgentId: 'grok-cli',
+        agents: [
+          { id: 'main:mixed', isMain: true, role: 'Codex App', activity: 'working' },
+          { id: 'grok-cli', role: 'Grok CLI', activity: 'working' },
+          { id: 'helper', role: 'subagent', activity: 'working' }
+        ], restingAgents: []
+      }] },
+      claude: { livePods: [] }, gemini: { livePods: [] }, grok: { livePods: [] }
+    }
+  };
+  const occupants = occupantsFromModel('codex', model, 0);
+  const lead = occupants.find((person) => person.supervisor);
+  assert.equal(lead.rawAgentId, 'grok-cli');
+  assert.equal(lead.provider, 'grok');
+  assert.ok(occupants.some((person) => person.id === 'pod:codex:mixed:main' && !person.supervisor), 'main APP remains a staff occupant when CLI is acting lead');
+  const layout = officeLayout('codex', 1, { occupants });
+  assert.equal(assignSeats(layout, occupants).find((entry) => entry.person.supervisor).role, 'manager');
+});
+
+test('completed execution worker walks to the same-floor rest zone then sits there', () => {
+  const finishedAt = 50_000;
+  const model = {
+    generatedAt: finishedAt + 1_000,
+    providers: {
+      codex: { livePods: [{
+        id: 'pod:codex:rest', activity: 'running', floorAssignment: 'execution',
+        agents: [{ id: 'main:rest', isMain: true, role: 'Codex App', activity: 'working' }],
+        restingAgents: [{ id: 'done', role: 'Claude CLI', activity: 'delivered', finishedAt }]
+      }] },
+      claude: { livePods: [] }, gemini: { livePods: [] }, grok: { livePods: [] }
+    }
+  };
+  const occupants = occupantsFromModel('codex', model, 0);
+  const layout = officeLayout('codex', 1, { occupants });
+  const restPlacement = assignSeats(layout, occupants).find((entry) => entry.person.resting);
+  const walking = poseFor(restPlacement, { time: 1_000, now: finishedAt + 1_000, mode: 'full', layout, room: 'codex', idleCue: null });
+  assert.equal(walking.pose, 'walk');
+  const rested = poseFor(restPlacement, { time: 5_000, now: finishedAt + 5_000, mode: 'full', layout, room: 'codex', idleCue: null });
+  assert.ok(['sit', 'drink'].includes(rested.pose));
+  assert.deepEqual([rested.gx, rested.gy], [restPlacement.gx, restPlacement.gy]);
+});
+
+test('a completed helper in a first-floor small project stays at its workstation', () => {
+  const model = {
+    providers: {
+      codex: { livePods: [{
+        id: 'pod:codex:small', activity: 'idle', floorAssignment: 'base', baseSlot: 0,
+        agents: [{ id: 'main:small', isMain: true, role: 'Codex App', activity: 'idle' }],
+        restingAgents: [{ id: 'done-small', role: 'Claude CLI', activity: 'delivered', finishedAt: 1_000 }]
+      }] },
+      claude: { livePods: [] }, gemini: { livePods: [] }, grok: { livePods: [] }
+    }, recentEvents: []
+  };
+  const occupants = occupantsFromModel('owner', model, 0);
+  const helper = occupants.find((person) => person.id === 'done-small');
+  assert.equal(helper.activity, 'idle');
+  assert.equal(helper.resting, undefined);
+  const layout = officeLayout('owner', 1, { occupants });
+  assert.equal(assignSeats(layout, occupants).find((entry) => entry.person.id === 'done-small').desk, true);
 });

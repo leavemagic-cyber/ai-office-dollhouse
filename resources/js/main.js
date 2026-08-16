@@ -3,6 +3,7 @@ import {
   createInitialState,
   degradeStaleSessions,
   DISPLAY_MODES,
+  reconcileFloorAssignments,
   safeLabel
 } from './domain.js';
 import { AutoDiscovery, EventInboxReader } from './discovery.js';
@@ -18,7 +19,6 @@ import {
   sharedFloorSessions
 } from './floor-layout.js';
 import { ROOM_META, RoomRenderer } from './renderer.js';
-import { CLICK_THROUGH_POLL_MS, ClickThroughGuard, clickThroughAt, scaleFromRect } from './click-through.js';
 import { PLATE } from './sketch.js';
 import { ResourceLifecycleManager } from './resource-manager.js';
 
@@ -37,7 +37,7 @@ const SKETCH_SUPERSAMPLE = Math.min(4, Math.max(2, Math.round((globalThis.device
 const FLOOR_CANVAS_WIDTH = Math.round(PLATE.logicalWidth * SKETCH_SUPERSAMPLE);
 const FLOOR_CANVAS_HEIGHT = Math.round(PLATE.logicalHeight * SKETCH_SUPERSAMPLE);
 // Bumped when the default geometry changes; older saved layouts are re-seeded once.
-const LAYOUT_VERSION = 5;
+const LAYOUT_VERSION = 6;
 
 function boundedInteger(value, fallback, minimum, maximum) {
   const numeric = Math.round(Number(value));
@@ -93,9 +93,10 @@ function loadSettings() {
       windowX: boundedInteger(stored.windowX, 6, -10_000, 10_000),
       windowY: boundedInteger(stored.windowY, 160, -10_000, 10_000),
       autoProtect: true,
-      projection: stored.projection === 'plan' ? 'plan' : 'axon',
-      // Provider work is always isolated by floor. Old compact-layout preferences are
-      // migrated away because they could visually mix unrelated providers.
+      // The approved animation is the isometric dollhouse. Ignore a legacy stored plan
+      // preference so an older installation cannot silently reopen the superseded view.
+      projection: 'axon',
+      // First floor hosts small projects; promoted projects each own an execution floor.
       floorLayout: 'floors',
       layoutVersion: LAYOUT_VERSION,
       seedCorner: migrating
@@ -136,24 +137,47 @@ function compactModel(state, existingSnapshot, resourceManager, systemMetrics, s
       .map((pod, podIndex) => ({
         id: pod.id,
         label: visibleLabel(pod.label, privacy, `工作 ${podIndex + 1}`),
+        createdAt: Number(pod.createdAt) || Number(pod.lastActivityAt) || 0,
         activity: pod.activity,
         surfaceKind: pod.surfaceKind,
         actingLeadAgentId: pod.actingLeadAgentId,
         discussionId: pod.discussionId,
+        discussionProviders: [...(pod.discussionProviders || [])],
+        discussionChairProvider: pod.discussionChairProvider || null,
+        floorAssignment: pod.floorAssignment || null,
+        baseSlot: Number.isInteger(pod.baseSlot) ? pod.baseSlot : null,
         delegatedAuthority: visibleLabel(pod.delegatedAuthority, privacy, ''),
         overflowAgentCount: Math.max(0, pod.overflowAgentCount || 0),
+        restingOverflowCount: Math.max(0, pod.restingOverflowCount || 0),
+        restingOverflowAt: Number(pod.restingOverflowAt) || null,
         lastActivityAt: pod.lastActivityAt,
         idleFrom: pod.idleFrom || null,
         idleSinceAt: Number(pod.idleSinceAt) || null,
         deliveredCount: Math.max(0, Number(pod.deliveredCount) || 0),
         deliveredAt: Number(pod.deliveredAt) || null,
+        workVisual: pod.workVisual || null,
+        discussionVisual: pod.discussionVisual || null,
+        closingUntil: Number(pod.closingUntil) || null,
         agents: Object.values(pod.agents || {})
           .filter((agent) => agent.lifecycle !== 'finished')
           .map((agent, agentIndex) => ({
             id: agent.id,
             role: privacy ? (agent.isMain ? '經理' : `subagent ${agentIndex}`) : safeLabel(agent.role, agent.isMain ? '經理' : 'subagent', 18),
             activity: agent.activity,
-            isMain: Boolean(agent.isMain)
+             isMain: Boolean(agent.isMain),
+             createdAt: Number(agent.createdAt) || 0,
+             seatOrdinal: Number.isInteger(agent.seatOrdinal) ? agent.seatOrdinal : null
+          })),
+        restingAgents: Object.values(pod.agents || {})
+          .filter((agent) => !agent.isMain && agent.lifecycle === 'finished')
+          .sort((left, right) => Number(right.finishedAt || 0) - Number(left.finishedAt || 0))
+          .slice(0, 3)
+          .map((agent, agentIndex) => ({
+            id: agent.id,
+            role: privacy ? `subagent ${agentIndex + 1}` : safeLabel(agent.role, 'subagent', 18),
+             activity: agent.activity,
+             finishedAt: Number(agent.finishedAt) || 0,
+             seatOrdinal: Number.isInteger(agent.seatOrdinal) ? agent.seatOrdinal : agentIndex
           }))
       }));
     const snapshotWork = (existingSnapshot?.providers?.[provider]?.work || []).map((work, index) => ({
@@ -232,6 +256,7 @@ function compactModel(state, existingSnapshot, resourceManager, systemMetrics, s
       correlationId: event.correlationId,
       targetProvider: event.targetProvider,
       participantProviders: event.participantProviders,
+      chairProvider: event.chairProvider || null,
       authorityScope: visibleLabel(event.authorityScope, privacy, ''),
       taskLabel: visibleLabel(event.taskLabel, privacy, '工作'),
       important: event.important
@@ -279,6 +304,36 @@ async function startTower() {
   tower.hidden = true;
   const settings = loadSettings();
   const state = createInitialState();
+  const floorAssignmentsKey = 'ai-office-v2-floor-assignments';
+  let savedFloorAssignments = {};
+  try { savedFloorAssignments = JSON.parse(localStorage.getItem(floorAssignmentsKey) || '{}'); } catch { savedFloorAssignments = {}; }
+  const restoreFloorAssignments = () => {
+    for (const team of Object.values(state.teams || {})) {
+      for (const pod of Object.values(team.pods || {})) {
+        const saved = savedFloorAssignments[pod.id];
+        if (!saved) continue;
+        if (saved.floorAssignment === 'execution') {
+          pod.floorAssignment = 'execution';
+          pod.baseSlot = null;
+        } else if (saved.floorAssignment === 'base' && Number.isInteger(saved.baseSlot)) {
+          pod.floorAssignment = 'base';
+          pod.baseSlot = saved.baseSlot;
+        }
+      }
+    }
+    reconcileFloorAssignments(state);
+  };
+  const persistFloorAssignments = () => {
+    const next = {};
+    for (const team of Object.values(state.teams || {})) {
+      for (const pod of Object.values(team.pods || {})) {
+        if (pod.lifecycle !== 'active') continue;
+        next[pod.id] = { floorAssignment: pod.floorAssignment, baseSlot: pod.baseSlot };
+      }
+    }
+    savedFloorAssignments = next;
+    try { localStorage.setItem(floorAssignmentsKey, JSON.stringify(next)); } catch { /* optional continuity cache */ }
+  };
   state.settings = { ...state.settings, ...settings };
   let existingSnapshot = null;
   let systemMetrics = {};
@@ -290,6 +345,9 @@ async function startTower() {
   const floorRoot = document.getElementById('tower-floors');
   let floorObserver = null;
   let overlayVisible = false;
+  // Starting the app is a direct request to see it. Keep an idle Owner floor visible
+  // instead of leaving a healthy process hidden with no way back from the shortcut.
+  let manualReveal = true;
   // The app deliberately starts hidden while it builds its first model. Some Windows
   // WebView launches report that hidden bootstrap window as "minimized". Restore this
   // one bootstrap transition explicitly; later automatic events still respect a real
@@ -348,61 +406,10 @@ async function startTower() {
     saveSettings(settings);
   }
   await bridge.makeDraggable(document.getElementById('tower-drag'), [...document.querySelectorAll('.tower-bar button')]);
+  try { await bridge.startClickThroughGuard(); } catch { /* safe fallback stays interactive */ }
   try { await bridge.lowerOwnPriority(); } catch { /* best effort */ }
   refreshDesktopLuminance();
   setInterval(refreshDesktopLuminance, 600_000);
-
-  /**
-   * Product rule 6: the animation may never intercept the Owner's work. The window is
-   * taken out of Windows hit testing whenever the cursor is over the drawing, and put
-   * back the moment it reaches the title bar, the buttons or a resize grip. Neutralino
-   * has no click-through API, so this is the native window style toggled from here.
-   */
-  const clickThrough = new ClickThroughGuard((next) => bridge.setClickThrough(next));
-  let clickThroughScale = 1;
-  let clickThroughBusy = false;
-
-  async function applyClickThrough(next) {
-    clickThroughBusy = true;
-    try {
-      const measured = await clickThrough.request(next);
-      if (measured) {
-        clickThroughScale = scaleFromRect(measured, settings.overlayWidth);
-      }
-    } finally {
-      clickThroughBusy = false;
-    }
-  }
-
-  /** Never leave a hidden or minimised window in the click-through state. */
-  async function restoreClickThroughForChrome() {
-    clickThrough.invalidateRect();
-    const measured = await clickThrough.ensureInteractive();
-    if (measured) clickThroughScale = scaleFromRect(measured, settings.overlayWidth);
-  }
-
-  function invalidateClickThroughRect() {
-    clickThrough.invalidateRect();
-  }
-
-  async function pollClickThrough() {
-    if (clickThroughBusy) return;
-    if (document.hidden) {
-      if (clickThrough.state !== false) await restoreClickThroughForChrome();
-      return;
-    }
-    if (!clickThrough.rect) {
-      await applyClickThrough(null);
-      return;
-    }
-    const cursor = await bridge.mousePosition();
-    // Missing cursor data is the safe, interactive decision. This also retries a native
-    // cleanup if the last confirmed OS state was click-through.
-    const wanted = clickThroughAt(cursor, clickThrough.rect, clickThroughScale);
-    if (wanted !== clickThrough.state) await applyClickThrough(wanted);
-  }
-
-  setInterval(() => { pollClickThrough().catch(() => {}); }, CLICK_THROUGH_POLL_MS);
 
   const resourceManager = new ResourceLifecycleManager({
     state,
@@ -425,7 +432,6 @@ async function startTower() {
     if (geometry !== appliedWindowGeometry) {
       appliedWindowGeometry = geometry;
       bridge.setCurrentWindowSize(width, height).catch(() => {});
-      invalidateClickThroughRect();
       // Anchored to the bottom-right corner: the stack grows upward instead of
       // sliding off the bottom of the screen as floors appear.
       if (settings.anchor === 'bottom-right') {
@@ -437,16 +443,16 @@ async function startTower() {
         }
       }
     }
-    const shouldShow = visibleCount > 0;
+    const shouldShow = visibleCount > 0 || manualReveal;
     tower.hidden = !shouldShow;
     if (shouldShow === overlayVisible) return;
     overlayVisible = shouldShow;
     if (shouldShow) {
       const force = startupShowPending;
       startupShowPending = false;
-      bridge.show({ focus: false, force }).catch(() => {});
+      bridge.show({ focus: force, force }).catch(() => {});
     }
-    else restoreClickThroughForChrome().finally(() => bridge.hide().catch(() => {}));
+    else bridge.hide().catch(() => {});
   }
 
   async function ensureIntegrationCoverage() {
@@ -594,6 +600,8 @@ async function startTower() {
     for (const [index, spec] of specs.entries()) {
       const view = floorViews.get(spec.key) || createFloorView(spec);
       Object.assign(view, spec);
+      view.renderer.room = spec.room;
+      view.renderer.annexIndex = spec.annexIndex;
       view.orderIndex = index;
       view.name.textContent = spec.title;
       view.head.setAttribute('aria-label', `${spec.title}：展開或隱藏`);
@@ -662,6 +670,7 @@ async function startTower() {
 
   async function broadcastModel() {
     broadcastQueued = false;
+    persistFloorAssignments();
     currentModel = compactModel(state, existingSnapshot, resourceManager, systemMetrics, settings, integrationCoverage);
     globalChoreography.ingest(currentModel, Date.now());
     try { localStorage.setItem('ai-office-v2-last-model', JSON.stringify(currentModel)); } catch { /* cache is optional */ }
@@ -677,7 +686,7 @@ async function startTower() {
 
   const discovery = new AutoDiscovery({
     bridge,
-    onEvent: (event) => { applyOfficeEvent(state, event, Date.now()); scheduleBroadcast(); },
+    onEvent: (event) => { applyOfficeEvent(state, event, Date.now()); restoreFloorAssignments(); scheduleBroadcast(); },
     onSystemMetrics: (metrics) => { systemMetrics = metrics; resourceManager.updateSystemMetrics(metrics); scheduleBroadcast(); },
     onStatus: (status) => {
       if (status.error) document.getElementById('tower-message').textContent = `偵測降級：${status.error}`;
@@ -687,7 +696,7 @@ async function startTower() {
     bridge,
     tailSnapshot: true,
     intervalMs: 1_500,
-    onEvent: (event) => { applyOfficeEvent(state, event, Date.now()); scheduleBroadcast(); },
+    onEvent: (event) => { applyOfficeEvent(state, event, Date.now()); restoreFloorAssignments(); scheduleBroadcast(); },
     onStatus: (status) => {
       if (status.ok === false) document.getElementById('tower-message').textContent = '事件檔有無法解析的資料，已忽略該列。';
     }
@@ -722,7 +731,6 @@ async function startTower() {
   ensureFloorViews(null);
   for (const view of floorViews.values()) floorObserver.observe(view.card);
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && clickThrough.state !== false) restoreClickThroughForChrome().catch(() => {});
     for (const view of floorViews.values()) {
       const active = !document.hidden && view.inView && !view.card.classList.contains('collapsed');
       if (active) {
@@ -733,9 +741,6 @@ async function startTower() {
   });
 
   document.getElementById('tower-minimize').addEventListener('click', async () => {
-    // Clear the click-through style first: a minimised window that still ignores the
-    // mouse cannot be restored by clicking it.
-    await restoreClickThroughForChrome();
     await bridge.minimize();
   });
   const closeButton = document.getElementById('tower-close');
@@ -816,9 +821,6 @@ async function startTower() {
         settings.windowY = boundedInteger(position.y, settings.windowY, -10_000, 10_000);
         saveSettings(settings);
       } catch { /* keeping the current location is sufficient */ }
-      // The window just moved, so every cached screen rectangle is wrong: the next poll
-      // has to measure again before it decides what is chrome and what is drawing.
-      invalidateClickThroughRect();
     }, 0);
   });
 
@@ -830,6 +832,17 @@ async function startTower() {
   inbox.start();
   resourceManager.startCompaction();
   await broadcastModel();
+
+  // A second shortcut launch writes a local reveal request and exits. The existing
+  // instance consumes it here, including when the user explicitly minimized it.
+  setInterval(async () => {
+    if (!await bridge.consumeShowRequest()) return;
+    manualReveal = true;
+    tower.hidden = false;
+    overlayVisible = true;
+    startupShowPending = false;
+    await bridge.show({ focus: true, force: true });
+  }, 500);
 
   discovery.start();
   refreshExistingSnapshot();

@@ -99,17 +99,19 @@ function jointAngle([a, b, c]) {
   return Math.acos(Math.max(-1, Math.min(1, cosine))) * 180 / Math.PI;
 }
 
-test('plate keeps the frozen 7% overlay proportions', () => {
-  assert.equal(PLATE.logicalWidth, 136);
-  assert.equal(PLATE.logicalHeight, 80);
+test('plate keeps the approved shallow office plus attached-room proportions', () => {
+  assert.equal(PLATE.logicalWidth, 160);
+  assert.equal(PLATE.logicalHeight, 100);
+  assert.equal(PLATE.mainWidth, 10);
   const project = projector();
   const [topX, topY] = project(0, 0);
   const [rightX] = project(PLATE.gridWidth, 0);
   const [leftX] = project(0, PLATE.gridDepth);
   const [, bottomY] = project(PLATE.gridWidth, PLATE.gridDepth);
-  // 2:1 dimetric: the plate is twice as wide as it is tall and sits inside the canvas.
-  assert.equal(Math.round(rightX - leftX), 131);
-  assert.equal(Math.round(bottomY - topY), 66);
+  // Near top-down perspective: the accepted office stays readable and widens slightly
+  // toward the entrance instead of collapsing into the rejected diamond tile.
+  assert.equal(Math.round(rightX - leftX), 134);
+  assert.equal(Math.round(bottomY - topY), 72);
   assert.ok(leftX >= 0 && rightX <= PLATE.logicalWidth, 'plate must fit the canvas width');
   assert.ok(bottomY + PLATE.thickness < PLATE.logicalHeight, 'name plate row must stay clear');
 });
@@ -151,7 +153,7 @@ test('every floor is laid out as an office, not scattered props', () => {
     assert.ok(kinds.includes('cart'), `${room} needs its print and recycle point`);
     // One desk per person, never a desk nobody can sit at.
     assert.equal(kinds.filter((kind) => kind === 'desk').length >= FLOOR_WORKSTATIONS, true, `${room} needs a desk per person`);
-    // Fewer, larger objects: a 136x80 plate cannot carry thirty-odd separate outlines.
+    // Fewer, larger objects: the compact plate cannot carry thirty-odd separate outlines.
     assert.ok(layout.items.length <= 30, `${room} draws ${layout.items.length} objects, too many for the plate`);
     const walls = layout.items.filter((item) => item.kind === 'wall');
     assert.ok(walls.filter((wall) => Array.isArray(wall.door)).length >= 1, `${room} needs a doorway`);
@@ -215,6 +217,43 @@ test('seat assignment keeps each pod at its own desk bank', () => {
   }
   const seats = placed.map((entry) => `${entry.gx}:${entry.gy}`);
   assert.equal(new Set(seats).size, seats.length, 'nobody shares a seat');
+});
+
+test('dynamic first floor draws only occupied workstations and keeps the meeting room permanent', () => {
+  const owner = { id: 'owner', provider: 'owner', podIndex: -1 };
+  const project = [
+    { id: 'main', provider: 'codex', zone: 'base', podIndex: 0, manager: true },
+    { id: 'helper', provider: 'claude', zone: 'base', podIndex: 0 }
+  ];
+  const idle = officeLayout('owner', 1, { occupants: [owner, ...project] });
+  assert.equal(idle.design, 'first-floor');
+  assert.equal(idle.items.filter((item) => item.kind === 'desk' && item.monitors).length, 3, 'Owner plus two actual workers need exactly three workstations');
+  assert.equal(idle.seats.filter((seat) => seat.role === 'meeting').length, 4, 'meeting room always keeps four shared chairs');
+  assert.ok(idle.items.filter((item) => item.kind === 'meeting').every((item) => item.alpha < .5), 'idle meeting room is faint');
+
+  const active = officeLayout('owner', 1, { occupants: [owner, ...project, { id: 'guest', meeting: true }] });
+  assert.ok(active.items.filter((item) => item.kind === 'meeting').every((item) => item.alpha === 1), 'active meeting room returns to normal contrast');
+  const empty = officeLayout('owner', 1, { occupants: [owner] });
+  assert.equal(empty.items.filter((item) => item.kind === 'desk' && item.monitors).length, 1, 'unused small-project slots never leave empty work desks');
+});
+
+test('dynamic execution floor has one supervisor desk, six staff desks and three rest seats', () => {
+  const supervisor = { id: 'lead', provider: 'grok', supervisor: true, manager: true };
+  const workers = Array.from({ length: 6 }, (_, index) => ({ id: `w${index}`, provider: 'codex' }));
+  const resting = Array.from({ length: 3 }, (_, index) => ({ id: `r${index}`, resting: true }));
+  const full = officeLayout('codex', 1, { occupants: [supervisor, ...workers, ...resting] });
+  assert.equal(full.design, 'execution');
+  assert.equal(full.items.filter((item) => item.kind === 'desk' && item.monitors).length, 7);
+  assert.equal(full.seats.filter((seat) => seat.role === 'manager').length, 1);
+  assert.equal(full.seats.filter((seat) => seat.role === 'rest').length, 3);
+  assert.ok(full.manager.gx < 4.9, 'supervisor stays left of the central doorway');
+  assert.ok(full.manager.gy > full.s3Seat[1], 'supervisor is behind S3');
+
+  const partial = officeLayout('codex', 1, { occupants: [supervisor, ...workers.slice(0, 2)] });
+  assert.equal(partial.items.filter((item) => item.kind === 'desk' && item.monitors).length, 3, 'no vacant employee desk is drawn');
+  const placed = assignSeats(full, [supervisor, ...workers, ...resting]);
+  assert.equal(placed.find((entry) => entry.person.id === 'lead').role, 'manager');
+  assert.ok(placed.filter((entry) => entry.person.resting).every((entry) => entry.role === 'rest'));
 });
 
 test('no two seats land on the same spot once projected to the screen', () => {
@@ -284,25 +323,21 @@ test('seat assignment never drops people when the roster overflows', () => {
   for (const entry of placed) assert.ok(Number.isFinite(entry.gx) && Number.isFinite(entry.gy));
 });
 
-test('the figure keeps one drawing language: solid head, line skeleton, colour on the floor', () => {
+test('the figure stays grayscale except for one tiny chest identity dot', () => {
   for (const pose of POSES) {
     const ctx = figureStrokes({ pose });
-    // Exactly one filled mass, and it is the head above the shoulders. The closed grey
-    // torso and the chest identity dot are what made the old figure ugly (spec §1/§2).
-    assert.equal(ctx.fills.length, 1, `${pose}: only the head may be solid`);
-    const [headX, headY, headRadius] = ctx.fills[0].points[0];
-    assert.ok(headRadius >= 1.2 && headRadius <= 1.3, `${pose}: head diameter out of the 2.4-2.6 band`);
-    assert.ok(headY < -8, `${pose}: the solid mass must be the head, not the chest`);
-    assert.ok(Math.abs(headX) < 1, `${pose}: the head sits over the spine`);
-
-    const identityStrokes = ctx.strokes.filter((stroke) => stroke.color === IDENTITY.codex);
-    assert.equal(identityStrokes.length, 1, `${pose}: one identity mark only`);
-    for (const [, y] of identityStrokes[0].points) {
-      assert.ok(y >= 1, `${pose}: identity belongs on the floor, clear of the feet`);
-    }
+    assert.equal(ctx.fills.length, 1, `${pose}: exactly one coloured dot`);
+    assert.equal(ctx.fills[0].color, IDENTITY.codex, `${pose}: identity only colours the dot`);
+    const [dotX, dotY, dotRadius] = ctx.fills[0].points[0];
+    assert.ok(dotRadius < .7, `${pose}: chest dot must stay tiny`);
+    assert.ok(dotY < -5 && dotY > -10, `${pose}: dot belongs on the chest`);
+    assert.ok(Math.abs(dotX) < 1, `${pose}: chest dot stays near the spine`);
+    assert.equal(ctx.strokes.some((stroke) => stroke.color === IDENTITY.codex), false, `${pose}: outlines stay grayscale`);
+    const head = ctx.strokes.find((stroke) => stroke.points.length === 1 && stroke.points[0].length === 4 && stroke.points[0][2] >= 1.2);
+    assert.ok(head, `${pose}: head is an outline, not a coloured fill`);
 
     // One line-width vocabulary per figure: a spine class, a limb class, a prop class.
-    const body = ctx.strokes.filter((stroke) => stroke.color !== IDENTITY.codex);
+    const body = ctx.strokes;
     const widths = new Set(body.map((stroke) => stroke.width));
     assert.ok(widths.size <= 3, `${pose}: ${widths.size} line widths inside one figure`);
     for (const width of widths) assert.ok(width > .4 && width <= 1, `${pose}: stray line width ${width}`);
@@ -310,17 +345,18 @@ test('the figure keeps one drawing language: solid head, line skeleton, colour o
 
   // 13px class: head crown to floor, with the neck gap that keeps the head readable.
   const standing = figureStrokes({ pose: 'stand' });
-  const crown = standing.fills[0].points[0][1] - standing.fills[0].points[0][2];
+  const head = standing.strokes.find((stroke) => stroke.points.length === 1 && stroke.points[0].length === 4 && stroke.points[0][2] >= 1.2);
+  const crown = head.points[0][1] - head.points[0][2];
   assert.ok(crown > -13.7 && crown < -12.8, `figure crown at ${crown.toFixed(2)}`);
-  const soles = Math.max(...standing.strokes.filter((stroke) => stroke.color !== IDENTITY.codex).flatMap((stroke) => stroke.points.map(([, y]) => y)));
-  const mark = standing.strokes.find((stroke) => stroke.color === IDENTITY.codex).points[0][1];
-  assert.ok(mark - soles >= 1, 'the identity mark keeps clear of the sole line');
+  const soles = Math.max(...standing.strokes.flatMap((stroke) => stroke.points.map(([, y]) => y)));
+  assert.ok(soles >= 0, 'feet still meet the floor');
 
-  // In plan the circle is the head from above, so identity tints the disc itself.
+  // Plan mode also keeps its full outline gray and uses only a tiny identity dot.
   const plan = recordingContext();
   drawPlanFigure(plan, 0, 0, THEMES.ink, { identity: IDENTITY.grok });
-  assert.equal(plan.fills.length, 1, 'plan figure has one filled disc');
-  assert.equal(plan.fills[0].color, IDENTITY.grok, 'plan identity tints the whole disc');
+  assert.equal(plan.fills.length, 1, 'plan figure has one tiny filled dot');
+  assert.equal(plan.fills[0].color, IDENTITY.grok, 'plan identity colours only the dot');
+  assert.ok(plan.fills[0].points[0][2] < 1, 'plan identity does not fill the whole head');
 });
 
 test('knees and elbows keep their spec angles, and no limb is a straight strut', () => {

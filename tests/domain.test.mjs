@@ -5,7 +5,8 @@ import {
   compactOfficeState,
   createInitialState,
   degradeStaleSessions,
-  summarizeState
+  summarizeState,
+  workVisualForEvent
 } from '../resources/js/domain.js';
 
 const base = 1_800_000_000_000;
@@ -24,6 +25,23 @@ function event(overrides = {}) {
     ...overrides
   };
 }
+
+test('every design-canon work vignette requires and accepts an explicit structured fact', () => {
+  const explicit = [
+    'coding', 'research', 'search', 'test', 'git', 'merge_conflict', 'build',
+    'document', 'night', 'context', 'external_wait', 'rate_limit', 'review', 'whiteboard', 'crash'
+  ];
+  for (const visualKind of explicit) {
+    assert.equal(workVisualForEvent({ eventType: 'tool_started', visualKind }), visualKind);
+  }
+  assert.equal(workVisualForEvent({ eventType: 'test_started' }), 'test');
+  assert.equal(workVisualForEvent({ eventType: 'context_compaction_started' }), 'context');
+  assert.equal(workVisualForEvent({ eventType: 'rate_limit_started' }), 'rate_limit');
+  assert.equal(workVisualForEvent({ eventType: 'process_crash_reported' }), 'crash');
+  assert.equal(workVisualForEvent({ eventType: 'tool_started', toolName: 'Write' }), null);
+  assert.equal(workVisualForEvent({ eventType: 'tool_started', toolName: 'Grep' }), null);
+  assert.equal(workVisualForEvent({ eventType: 'process_observed', visualKind: 'secret_thought' }), null, 'unknown evidence never invents a vignette');
+});
 
 test('same provider shares a team floor but keeps independent session pods', () => {
   const state = createInitialState(base);
@@ -270,17 +288,48 @@ test('signature choreography events are accepted only with a real session', () =
     eventId: 'discussion',
     eventType: 'discussion_started',
     correlationId: 'review-room-1',
-    participantProviders: ['codex', 'claude']
+    participantProviders: ['claude', 'grok'],
+    chairProvider: 'grok'
   }), base + 1).applied, true);
   const pod = state.teams.codex.pods['session-a'];
   assert.equal(pod.activity, 'discussing');
   assert.equal(pod.discussionId, 'review-room-1');
-  assert.deepEqual(state.eventLog.at(-1).participantProviders, ['codex', 'claude']);
+  assert.deepEqual(pod.discussionProviders, ['claude', 'grok'], 'the executing Codex provider is not invented as an attendee');
+  assert.equal(pod.discussionChairProvider, 'grok');
+  assert.deepEqual(state.eventLog.at(-1).participantProviders, ['claude', 'grok']);
+  const ended = applyOfficeEvent(state, event({
+    eventId: 'discussion-ended',
+    eventType: 'discussion_ended',
+    correlationId: 'review-room-1'
+  }), base + 2);
+  assert.deepEqual(ended.event.participantProviders, ['claude', 'grok'], 'return trip preserves the exact independent participant set');
+  assert.equal(ended.event.chairProvider, 'grok', 'return trip preserves the Owner-selected chair');
+  assert.equal(pod.activity, 'running');
+
+  const meeting = applyOfficeEvent(state, event({
+    eventId: 'meeting',
+    eventType: 'meeting_started',
+    correlationId: 'meeting-room-1',
+    participantProviders: ['gemini', 'claude'],
+    moderator_provider: 'claude'
+  }), base + 3);
+  assert.equal(meeting.applied, true);
+  assert.deepEqual(pod.discussionProviders, ['gemini', 'claude']);
+  assert.equal(pod.discussionChairProvider, 'claude');
+  const meetingEnded = applyOfficeEvent(state, event({
+    eventId: 'meeting-ended',
+    eventType: 'meeting_completed',
+    correlationId: 'meeting-room-1'
+  }), base + 4);
+  assert.deepEqual(meetingEnded.event.participantProviders, ['gemini', 'claude']);
+  assert.equal(meetingEnded.event.chairProvider, 'claude');
+  assert.equal(pod.activity, 'running');
+
   assert.equal(applyOfficeEvent(state, event({
     eventId: 'bad-discussion',
     eventType: 'discussion_started',
     sessionId: null
-  }), base + 2).applied, false);
+  }), base + 5).applied, false);
 });
 
 test('acting lead and delegated decision state remain tied to one session pod', () => {
@@ -313,7 +362,7 @@ test('annex count expands vertically without changing session identity', () => {
     }), base + index + 1);
   }
   assert.equal(Object.keys(state.teams.codex.pods).length, 1);
-  assert.equal(state.teams.codex.annexCount, 2);
+  assert.equal(state.teams.codex.annexCount, 3);
 });
 
 test('repeated Owner request events do not duplicate the same waiting visitor', () => {
@@ -343,7 +392,49 @@ test('large live teams keep an exact overflow count while detailed agent objects
   const pod = state.teams.codex.pods['session-a'];
   assert.equal(Object.keys(pod.agents).length, 32);
   assert.equal(pod.overflowAgentCount, 9);
-  assert.equal(state.teams.codex.annexCount, 3);
+  assert.equal(state.teams.codex.annexCount, 6);
+});
+
+test('three two-person-or-smaller projects occupy first-floor slots and the fourth opens an execution floor', () => {
+  const state = createInitialState(base);
+  for (let index = 0; index < 4; index += 1) {
+    applyOfficeEvent(state, event({
+      eventId: `project-${index}`,
+      provider: ['codex', 'claude', 'grok', 'gemini'][index],
+      sessionId: `project-${index}`,
+      timestamp: base + index
+    }), base + index);
+  }
+  const pods = Object.values(state.teams).flatMap((team) => Object.values(team.pods));
+  assert.deepEqual(pods.filter((pod) => pod.floorAssignment === 'base').map((pod) => pod.baseSlot).sort(), [0, 1, 2]);
+  assert.equal(pods.filter((pod) => pod.floorAssignment === 'execution').length, 1);
+});
+
+test('a third project member promotes the whole project permanently', () => {
+  const state = createInitialState(base);
+  applyOfficeEvent(state, event({ eventId: 'promote-start' }), base);
+  applyOfficeEvent(state, event({ eventId: 'promote-a', eventType: 'agent_spawned', agentId: 'a' }), base + 1);
+  const pod = state.teams.codex.pods['session-a'];
+  assert.equal(pod.floorAssignment, 'base');
+  applyOfficeEvent(state, event({ eventId: 'promote-b', eventType: 'agent_spawned', agentId: 'b' }), base + 2);
+  assert.equal(pod.floorAssignment, 'execution');
+  applyOfficeEvent(state, event({ eventId: 'promote-b-done', eventType: 'agent_finished', agentId: 'b' }), base + 3);
+  assert.equal(pod.floorAssignment, 'execution');
+  assert.equal(pod.baseSlot, null);
+});
+
+test('completed overflow workers remain represented in the same-floor rest pool', () => {
+  const state = createInitialState(base);
+  applyOfficeEvent(state, event({ eventId: 'rest-start' }), base);
+  for (let index = 0; index < 33; index += 1) {
+    applyOfficeEvent(state, event({ eventId: `rest-spawn-${index}`, eventType: 'agent_spawned', agentId: `rest-${index}` }), base + index + 1);
+  }
+  const pod = state.teams.codex.pods['session-a'];
+  const before = pod.overflowAgentCount;
+  applyOfficeEvent(state, event({ eventId: 'rest-finish-overflow', eventType: 'agent_finished', agentId: 'not-detailed' }), base + 50);
+  assert.equal(pod.overflowAgentCount, before - 1);
+  assert.equal(pod.restingOverflowCount, 1);
+  assert.equal(pod.floorAssignment, 'execution');
 });
 
 test('completed sessions retained for TTL do not keep empty annex floors alive', () => {

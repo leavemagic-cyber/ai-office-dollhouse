@@ -66,11 +66,13 @@ test('cross-floor request and discussion cues appear only on truthful destinatio
   const request = { kind: 'owner_request', event: { provider: 'codex', sessionId: 's2' } };
   assert.equal(cueAppearsOnFloor(request, { room: 'owner' }, model), true);
   assert.equal(cueAppearsOnFloor(request, { room: 'codex', annexIndex: 0 }, model), false);
-  // Solo sessions still own provider-isolated floors; unrelated providers never mix.
+  // A two-person-or-smaller project lives on the first floor, not a provider floor.
   assert.equal(cueAppearsOnFloor(request, { room: 'shared' }, model), false);
-  assert.equal(cueAppearsOnFloor(request, { room: 'codex', annexIndex: 1 }, model), true);
+  assert.equal(cueAppearsOnFloor(request, { room: 'codex', annexIndex: 1 }, model), false);
   const discussion = { kind: 'discussion', event: { provider: 'codex', sessionId: 's1' } };
-  assert.equal(cueAppearsOnFloor(discussion, { room: 'lobby' }, model), true);
+  assert.equal(cueAppearsOnFloor(discussion, { room: 'owner' }, model), true);
+  assert.equal(cueAppearsOnFloor(discussion, { room: 'codex', annexIndex: 0 }, model), false, 'independent discussion AIs never blank an execution floor');
+  assert.equal(cueAppearsOnFloor(discussion, { room: 'lobby' }, model), false);
   assert.equal(cueAppearsOnFloor(discussion, { room: 'gemini' }, model), false);
 });
 
@@ -106,4 +108,21 @@ test('two timely subagent deliveries synthesize the I queue animation', () => {
   const cue = coordinator.current(now);
   assert.equal(cue.code, 'I');
   assert.equal(cue.deliveries.length, 2);
+});
+
+test('session close never duplicates or preempts the task-completed J report', () => {
+  const now = 120_000;
+  const stopped = { eventId: 'stop', provider: 'codex', eventType: 'session_stopped', timestamp: now, sessionId: 's1' };
+  const withoutDelivery = new ChoreographyCoordinator();
+  withoutDelivery.ingest({ recentEvents: [stopped] }, now);
+  assert.equal(withoutDelivery.current(now).kind, 'closing_departure');
+
+  const withDelivery = new ChoreographyCoordinator();
+  withDelivery.ingest({ recentEvents: [
+    { eventId: 'done', provider: 'codex', eventType: 'task_completed', timestamp: now - 500, sessionId: 's1' },
+    stopped
+  ] }, now);
+  assert.equal(withDelivery.current(now).kind, 'final_delivery');
+  withDelivery.active.startedAt = now - withDelivery.active.duration;
+  assert.equal(withDelivery.current(now).kind, 'closing_departure');
 });

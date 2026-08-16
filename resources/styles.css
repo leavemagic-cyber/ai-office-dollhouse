@@ -156,7 +156,7 @@ button { font: inherit; }
   display: block;
   width: 100%;
   height: auto;
-  aspect-ratio: 136 / 80;
+  aspect-ratio: 160 / 100;
   background: transparent;
   image-rendering: auto;
 }

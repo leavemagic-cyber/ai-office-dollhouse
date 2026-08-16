@@ -11,6 +11,9 @@ export const RESOURCE_LIMITS = Object.freeze({
 
 const POD_CAPACITY_OMITTED = Symbol('pod-capacity-omitted');
 
+export const BASE_PROJECT_SLOTS = 3;
+export const BASE_PROJECT_CAPACITY = 2;
+
 export const DISPLAY_MODES = Object.freeze({
   FULL: 'full',
   LOW: 'low',
@@ -36,11 +39,24 @@ const SESSION_EVENTS = new Set([
   'owner_input_received',
   'tool_started',
   'tool_finished',
+  'research_started',
+  'review_started',
+  'test_started',
+  'build_started',
+  'document_started',
+  'context_started',
+  'context_compaction_started',
+  'external_wait_started',
+  'rate_limit_started',
+  'process_crash_reported',
+  'meeting_started',
+  'meeting_completed',
   'task_completed',
   'session_stopped',
   'agent_spawned',
   'agent_finished',
   'agent_failed',
+  'process_crash_reported',
   'agent_cancelled',
   'delegation_started',
   'delegation_finished',
@@ -141,6 +157,9 @@ function normalizeEvent(raw, now) {
   const rawParticipants = Array.isArray(raw?.participantProviders || raw?.participant_providers)
     ? (raw.participantProviders || raw.participant_providers)
     : [];
+  const rawChairProvider = raw?.chairProvider || raw?.chair_provider
+    || raw?.moderatorProvider || raw?.moderator_provider || raw?.chair || raw?.moderator || null;
+  const chairProvider = rawChairProvider ? normalizeProvider(rawChairProvider) : 'other';
   return {
     eventId,
     timestamp,
@@ -154,10 +173,12 @@ function normalizeEvent(raw, now) {
     correlationId: safeLabel(raw?.correlationId || raw?.correlation_id || '', '', 64),
     targetProvider: raw?.targetProvider || raw?.target_provider ? normalizeProvider(raw.targetProvider || raw.target_provider) : null,
     participantProviders: [...new Set(rawParticipants.map(normalizeProvider).filter((item) => item !== 'other'))],
+    chairProvider: chairProvider === 'other' ? null : chairProvider,
     authorityScope: safeLabel(raw?.authorityScope || raw?.authority_scope || '', '', 42),
     taskLabel: safeLabel(raw?.taskLabel || raw?.task_label || raw?.safeLabel || raw?.safe_label),
     role: safeLabel(raw?.role || raw?.agentType || raw?.agent_type || '', '', 24),
     toolName: safeLabel(raw?.toolName || raw?.tool_name || '', '', 30),
+    visualKind: safeLabel(raw?.visualKind || raw?.visual_kind || raw?.animationKind || raw?.animation_kind || '', '', 24).toLowerCase(),
     processState: String(raw?.processState || raw?.process_state || '').toLowerCase(),
     observationTier: String(raw?.observationTier || raw?.observation_tier || 'D').toUpperCase(),
     sourceConfidence: String(raw?.sourceConfidence || raw?.source_confidence || 'unknown'),
@@ -255,8 +276,14 @@ function ensurePod(state, event) {
       deliveredAt: null,
       actingLeadAgentId: null,
       discussionId: null,
+      discussionProviders: [],
+      discussionChairProvider: null,
       delegatedAuthority: null,
-      overflowAgentCount: 0
+      overflowAgentCount: 0,
+      restingOverflowCount: 0,
+      restingOverflowAt: null,
+      floorAssignment: null,
+      baseSlot: null
     };
     pod.agents[`main:${event.sessionId}`] = {
       id: `main:${event.sessionId}`,
@@ -279,6 +306,65 @@ function ensurePod(state, event) {
 
 function mainAgent(pod) {
   return pod?.agents?.[`main:${pod.sessionId}`] || null;
+}
+
+export function activePodPopulation(pod) {
+  return Math.max(1,
+    Object.values(pod?.agents || {}).length
+      + Math.max(0, Number(pod?.overflowAgentCount) || 0)
+      + Math.max(0, Number(pod?.restingOverflowCount) || 0));
+}
+
+/**
+ * First-floor residency is allocated once and an execution-floor promotion is sticky.
+ * A project moves upstairs as soon as it reaches three active AIs, or immediately when
+ * all three small-project slots are already occupied. It never moves back downstairs.
+ */
+export function reconcileFloorAssignments(state) {
+  const activePods = Object.values(state?.teams || {})
+    .flatMap((team) => Object.values(team?.pods || {}))
+    .filter((pod) => pod.lifecycle === 'active')
+    .sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0)
+      || String(left.id || '').localeCompare(String(right.id || '')));
+
+  const occupied = new Set();
+  for (const pod of activePods) {
+    pod.restingOverflowCount = Math.max(0, Number(pod.restingOverflowCount) || 0);
+    if (pod.floorAssignment === 'execution') {
+      pod.baseSlot = null;
+      continue;
+    }
+    if (activePodPopulation(pod) >= 3) {
+      pod.floorAssignment = 'execution';
+      pod.baseSlot = null;
+      continue;
+    }
+    const slot = Number(pod.baseSlot);
+    if (pod.floorAssignment === 'base'
+      && Number.isInteger(slot)
+      && slot >= 0
+      && slot < BASE_PROJECT_SLOTS
+      && !occupied.has(slot)) {
+      occupied.add(slot);
+      continue;
+    }
+    pod.floorAssignment = null;
+    pod.baseSlot = null;
+  }
+
+  for (const pod of activePods) {
+    if (pod.floorAssignment) continue;
+    const slot = Array.from({ length: BASE_PROJECT_SLOTS }, (_, index) => index)
+      .find((index) => !occupied.has(index));
+    if (slot === undefined) {
+      pod.floorAssignment = 'execution';
+      pod.baseSlot = null;
+    } else {
+      pod.floorAssignment = 'base';
+      pod.baseSlot = slot;
+      occupied.add(slot);
+    }
+  }
 }
 
 function setPodActivity(pod, activity, { resolvesOwnerRequest = false } = {}) {
@@ -318,6 +404,24 @@ function terminalAgentActivity(eventType) {
   if (eventType === 'agent_failed') return 'failed';
   if (eventType === 'agent_cancelled') return 'cancelled';
   return 'delivered';
+}
+
+const WORK_VISUAL_KINDS = new Set([
+  'coding', 'research', 'search', 'test', 'git', 'merge_conflict', 'build',
+  'document', 'night', 'context', 'external_wait', 'rate_limit', 'review', 'whiteboard', 'crash'
+]);
+
+/** Only explicit structured event facts may select a specific work vignette. */
+export function workVisualForEvent(event) {
+  if (WORK_VISUAL_KINDS.has(event?.visualKind)) return event.visualKind;
+  const eventMap = {
+    research_started: 'research', review_started: 'review', test_started: 'test',
+    build_started: 'build', document_started: 'document', context_started: 'context',
+    context_compaction_started: 'context', external_wait_started: 'external_wait',
+    rate_limit_started: 'rate_limit', process_crash_reported: 'crash'
+  };
+  if (eventMap[event?.eventType]) return eventMap[event.eventType];
+  return null;
 }
 
 function applyAgentEvent(state, event, pod) {
@@ -371,6 +475,7 @@ function applyAgentEvent(state, event, pod) {
         createdAt: event.timestamp,
         lastActivityAt: event.timestamp,
         finishedAt: null,
+        seatOrdinal: Math.max(0, detailedCount - 1),
         isMain: false
       };
     }
@@ -383,6 +488,8 @@ function applyAgentEvent(state, event, pod) {
     if (!agent) {
       if (pod.overflowAgentCount > 0) {
         pod.overflowAgentCount -= 1;
+        pod.restingOverflowCount = Math.min(3, (pod.restingOverflowCount || 0) + 1);
+        pod.restingOverflowAt = event.timestamp;
         if (event.eventType === 'agent_failed') pod.lastImportantEvent = 'agent_failed';
         return;
       }
@@ -492,12 +599,15 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
         pod.idleFrom = null;
         pod.idleSinceAt = null;
         if (main) main.activity = 'working';
+        // A turn starting proves work, but not what physical vignette is truthful.
+        pod.workVisual = null;
         break;
       case 'turn_completed':
         setPodActivity(pod, 'idle');
         pod.idleFrom = 'turn_completed';
         pod.idleSinceAt = event.timestamp;
         if (main) main.activity = 'delivered';
+        pod.workVisual = null;
         break;
       case 'owner_input_required':
         pod.activity = 'waiting_owner';
@@ -516,8 +626,24 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
           main.activity = 'working';
           main.role = event.toolName ? safeLabel(event.toolName, main.role, 22) : main.role;
         }
+        pod.workVisual = workVisualForEvent(event);
         break;
       case 'tool_finished':
+        if (main) main.activity = 'working';
+        pod.workVisual = null;
+        break;
+      case 'research_started':
+      case 'review_started':
+      case 'test_started':
+      case 'build_started':
+      case 'document_started':
+      case 'context_started':
+      case 'context_compaction_started':
+      case 'external_wait_started':
+      case 'rate_limit_started':
+      case 'process_crash_reported':
+        setPodActivity(pod, 'running');
+        pod.workVisual = workVisualForEvent(event);
         if (main) main.activity = 'working';
         break;
       case 'task_completed':
@@ -534,12 +660,15 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
         setPodActivity(pod, 'completed', { resolvesOwnerRequest: true });
         pod.completedAt = event.timestamp;
         pod.lastImportantEvent = 'session_stopped';
+        pod.closingUntil = event.timestamp + 12_000;
+        pod.workVisual = null;
         for (const agent of Object.values(pod.agents)) {
           agent.activity = 'completed';
           agent.lifecycle = 'finished';
           agent.finishedAt = event.timestamp;
         }
         pod.overflowAgentCount = 0;
+        pod.restingOverflowCount = 0;
         break;
       case 'agent_spawned':
       case 'agent_finished':
@@ -555,13 +684,33 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
         pod.lastImportantEvent = 'acting_lead_handoff';
         break;
       case 'discussion_started':
+      case 'meeting_started':
         setPodActivity(pod, 'discussing');
         pod.discussionId = event.correlationId || event.eventId;
+        // The provider identifies the project that emitted the event, not a meeting
+        // attendee. Participants are an independent structured set and are never inferred
+        // from the executing session, target provider, or process identity.
+        pod.discussionProviders = [...new Set(event.participantProviders
+          .filter((provider) => provider && provider !== 'other'))].slice(0, 4);
+        pod.discussionChairProvider = pod.discussionProviders.includes(event.chairProvider)
+          ? event.chairProvider
+          : null;
         pod.lastImportantEvent = 'discussion_started';
+        pod.discussionVisual = event.visualKind || null;
         break;
       case 'discussion_ended':
+      case 'meeting_completed':
+        if (event.participantProviders.length < 2 && pod.discussionProviders.length >= 2) {
+          event.participantProviders = [...pod.discussionProviders];
+        }
+        if (!event.chairProvider && pod.discussionChairProvider) {
+          event.chairProvider = pod.discussionChairProvider;
+        }
         setPodActivity(pod, 'running');
         pod.discussionId = null;
+        pod.discussionProviders = [];
+        pod.discussionChairProvider = null;
+        pod.discussionVisual = null;
         break;
       case 'revision_requested':
         setPodActivity(pod, 'running');
@@ -590,6 +739,7 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
     return { applied: false, reason: 'event_type_unknown', event };
   }
 
+  reconcileFloorAssignments(state);
   Object.values(state.teams).forEach((team) => recomputeTeam(team, event.timestamp));
   recomputeOwner(state);
   state.metrics.applied += 1;
@@ -605,10 +755,11 @@ export function compactOfficeState(state, now = Date.now(), options = {}) {
   const maxEvents = options.maxEvents ?? 500;
   const maxSeen = options.maxSeen ?? 2048;
 
+  reconcileFloorAssignments(state);
   Object.values(state.teams).forEach((team) => {
     Object.values(team.pods).forEach((pod) => {
       Object.entries(pod.agents).forEach(([id, agent]) => {
-        if (!agent.isMain && agent.finishedAt && now - agent.finishedAt > agentTtl) {
+        if (pod.lifecycle !== 'active' && !agent.isMain && agent.finishedAt && now - agent.finishedAt > agentTtl) {
           delete pod.agents[id];
         }
       });

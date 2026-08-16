@@ -3,6 +3,7 @@ const ACTION_ALLOWLIST = new Set(['status', 'install']);
 const SNAPSHOT_PROVIDERS = ['codex', 'claude', 'gemini', 'grok'];
 const INSTANCE_STALE_MS = 45_000;
 const INSTANCE_HEARTBEAT_MS = 10_000;
+const SHOW_REQUEST_FILE = 'show-request.json';
 export const CLOSE_CLEANUP_TIMEOUT_MS = 250;
 export const MODEL_WRITE_TIMEOUT_MS = 2_500;
 
@@ -46,8 +47,10 @@ export class NativeBridge {
     this.instanceProcessId = null;
     this.instanceAcquired = false;
     this.instanceHeartbeatTimer = null;
+    this.showRequestFile = '';
     this.modelWritePromise = null;
     this.pendingModelPayload = null;
+    this.clickThroughGuardProcessId = null;
   }
 
   async initialize() {
@@ -58,20 +61,39 @@ export class NativeBridge {
     });
     const localAppData = await globalThis.Neutralino.os.getEnv('LOCALAPPDATA');
     this.dataDirectory = `${localAppData}\\AIOfficeDollhouse`;
+    this.showRequestFile = `${this.dataDirectory}\\${SHOW_REQUEST_FILE}`;
     try { await globalThis.Neutralino.filesystem.createDirectory(this.dataDirectory); } catch { /* already exists */ }
     const rawPid = await globalThis.Neutralino.app.getProcessId();
     const processId = Number(rawPid?.id ?? rawPid);
     if (!Number.isInteger(processId) || processId <= 0) throw new Error('Invalid application process ID');
     this.instanceProcessId = processId;
     if (await this.acquireSingleInstance()) return true;
-    await globalThis.Neutralino.os.showMessageBox(
-      'AI 玩偶辦公室',
-      'AI 玩偶辦公室已在執行中；不會再啟動第二個浮層。',
-      'OK',
-      'INFO'
-    );
+    // Launching the shortcut again is an explicit request to reveal the existing
+    // overlay. Leave a tiny local signal for the owning process instead of showing
+    // an "already running" dead end in this short-lived second process.
+    await this.requestExistingInstanceShow();
     await globalThis.Neutralino.app.exit();
     return false;
+  }
+
+  async requestExistingInstanceShow() {
+    if (!this.isNative || !this.showRequestFile) return false;
+    await globalThis.Neutralino.filesystem.writeFile(this.showRequestFile, JSON.stringify({
+      schemaVersion: 1,
+      requestedAt: Date.now()
+    }));
+    return true;
+  }
+
+  async consumeShowRequest() {
+    if (!this.isNative || !this.showRequestFile) return false;
+    try {
+      const request = JSON.parse(await globalThis.Neutralino.filesystem.readFile(this.showRequestFile));
+      await globalThis.Neutralino.filesystem.remove(this.showRequestFile);
+      return request?.schemaVersion === 1 && Number.isFinite(Number(request?.requestedAt));
+    } catch {
+      return false;
+    }
   }
 
   async readInstanceOwner() {
@@ -187,8 +209,7 @@ export class NativeBridge {
     return `${this.appRoot}\\scripts\\${name}`;
   }
 
-  async runPowerShell(scriptName, namedArgs = {}) {
-    if (!this.isNative) return { exitCode: 0, stdOut: '{}', stdErr: '' };
+  powerShellCommand(scriptName, namedArgs = {}) {
     const script = this.scriptPath(scriptName);
     const args = Object.entries(namedArgs).flatMap(([key, value]) => {
       if (!/^[A-Za-z][A-Za-z0-9]*$/.test(key)) throw new Error('Invalid internal argument name');
@@ -206,6 +227,12 @@ export class NativeBridge {
       quoteWindows(script),
       ...args
     ].join(' ');
+    return command;
+  }
+
+  async runPowerShell(scriptName, namedArgs = {}) {
+    if (!this.isNative) return { exitCode: 0, stdOut: '{}', stdErr: '' };
+    const command = this.powerShellCommand(scriptName, namedArgs);
     return globalThis.Neutralino.os.execCommand(command, { background: false });
   }
 
@@ -249,33 +276,25 @@ export class NativeBridge {
   }
 
   /** Average wallpaper luminance, so the sketch overlay can flip between ink and white. */
-  /**
-   * Adds or removes WS_EX_TRANSPARENT on the overlay window and reports the window rect
-   * in physical pixels. `on = null` only measures. Returns null when the native layer is
-   * unavailable, so the caller can keep the overlay interactive rather than guess.
-   */
-  async setClickThrough(on = null) {
-    if (!this.isNative) return null;
+  /** Starts the low-priority native guard that owns per-region Windows hit testing. */
+  async startClickThroughGuard() {
+    if (!this.isNative) return false;
+    if (this.clickThroughGuardProcessId) return true;
+    const rawPid = await globalThis.Neutralino.app.getProcessId();
+    const processId = Number(rawPid?.id ?? rawPid);
+    if (!Number.isInteger(processId) || processId <= 0) return false;
+    const executable = `${this.appRoot}\\scripts\\click-through\\AIOfficeClickThrough.exe`;
     try {
-      const processId = await globalThis.Neutralino.app.getProcessId();
-      const result = await this.runPowerShell('set-click-through.ps1', {
-        ProcessId: Math.trunc(Number(processId) || 0),
-        On: on === null ? '-1' : (on ? 1 : 0)
-      });
-      const payload = lastJsonLine(result.stdOut);
-      return payload?.ok ? payload : null;
+      const stats = await globalThis.Neutralino.filesystem.getStats(executable);
+      if (!stats?.isFile) return false;
     } catch {
-      return null;
+      return false;
     }
-  }
-
-  async mousePosition() {
-    if (!this.isNative) return null;
-    try {
-      return await globalThis.Neutralino.computer.getMousePosition();
-    } catch {
-      return null;
-    }
+    const spawned = await globalThis.Neutralino.os.spawnProcess(`${quoteWindows(executable)} --pid ${processId}`);
+    const helperPid = Number(spawned?.pid);
+    if (!Number.isInteger(helperPid) || helperPid <= 0) return false;
+    this.clickThroughGuardProcessId = helperPid;
+    return true;
   }
 
   async desktopLuminance() {

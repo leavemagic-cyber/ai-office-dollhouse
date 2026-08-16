@@ -1,46 +1,31 @@
 export const PROVIDER_ROOMS = Object.freeze(['codex', 'claude', 'gemini', 'grok']);
 export const MAX_RENDERED_ANNEXES_PER_PROVIDER = 12;
-export const PEOPLE_PER_ANNEX = 14;
-// Owner, 2026-08-12: one floor shows at most six people. Above that the figures would
-// have to be shrunk to fit, and a shrunken figure is a worse answer than an honest "+N".
-export const FLOOR_WORKSTATIONS = 6;
-// Recent work history is context, never competition for the live office. When no
-// lifecycle-backed work exists, keep only a small newest-first static digest visible.
-export const MAX_VISIBLE_SNAPSHOT_FLOORS = 2;
-// Retained only as a neutral destination for a short cue whose session can no longer be
-// matched. Live work never mixes providers on this floor.
+export const BASE_PROJECT_SLOTS = 3;
+export const BASE_PROJECT_CAPACITY = 2;
+export const EXECUTION_STAFF_WORKSTATIONS = 6;
+export const EXECUTION_REST_SEATS = 3;
+// Compatibility name used by renderer/tests: staff capacity excludes the supervisor.
+export const FLOOR_WORKSTATIONS = EXECUTION_STAFF_WORKSTATIONS;
+export const PEOPLE_PER_ANNEX = 1 + EXECUTION_STAFF_WORKSTATIONS;
+export const MAX_VISIBLE_SNAPSHOT_FLOORS = 0;
 export const SHARED_FLOOR_KEY = 'shared';
 
 const LIVE_EVENT_FRESH_MS = 10 * 60_000;
-// Unknown is a bounded uncertainty state, not a permanent second kind of "live".
-// A real adapter disconnect gets ten minutes of frozen visibility; an ancient replay
-// whose uncertainty began long ago expires immediately instead of rebuilding old floors.
 export const UNKNOWN_FREEZE_MS = 10 * 60_000;
 const CURRENT_PRESENCE_FRESH_MS = 60_000;
-const IMPORTANT_EVENT_FRESH_MS = 20_000;
 
 export function floorKey(room, annexIndex = 0) {
   return annexIndex > 0 ? `${room}:${annexIndex + 1}` : room;
 }
 
-/** Headcount a session shows: the main worker plus its subagents, summarised overflow included. */
 export function sessionPopulation(session) {
   return Math.max(1, (session?.agents || []).length + Math.max(0, Number(session?.overflowAgentCount) || 0));
 }
 
-/**
- * Whether a session has subagents remains useful for population and presentation, but
- * every live session now owns a provider-isolated floor regardless of this value.
- */
 export function sessionHasSubagents(session) {
   return sessionPopulation(session) > 1;
 }
 
-/**
- * One provider's sessions in display order. Live pods win outright; only a provider with
- * no live pod at all falls back to its recent snapshot work, which is the same precedence
- * the renderer uses when it turns a model into people.
- */
 export function sessionsForProvider(providerState) {
   const live = providerState?.livePods || [];
   if (live.length) {
@@ -48,35 +33,96 @@ export function sessionsForProvider(providerState) {
       id: pod.id,
       label: pod.label,
       index,
+      provider: pod.provider || null,
       source: 'live',
       activity: pod.activity,
+      createdAt: Number(pod.createdAt) || Number(pod.lastActivityAt) || index,
       updatedAt: Number(pod.lastActivityAt) || 0,
       population: sessionPopulation(pod),
-      team: sessionHasSubagents(pod)
+      team: sessionHasSubagents(pod),
+      floorAssignment: pod.floorAssignment || null,
+      baseSlot: Number.isInteger(pod.baseSlot) ? pod.baseSlot : null
     }));
   }
   return (providerState?.snapshotWork || []).filter((work) => work.recent).map((work, index) => ({
     id: work.id,
     label: work.label,
     index,
+    provider: null,
     source: 'snapshot',
-    // A snapshot proves that a work record exists, not that it is executing now.
     activity: 'snapshot',
+    createdAt: Number(work.updatedAt) || index,
     updatedAt: Number(work.updatedAt) || 0,
-    // Snapshot work lists helpers only, so the main worker is added on top.
-    population: Math.max(1, 1 + (work.agents || []).length),
-    team: (work.agents || []).length > 0 || Number(work.openChildren) > 0
+    population: 0,
+    team: false,
+    floorAssignment: null,
+    baseSlot: null
   }));
 }
 
-/** One provider's sessions, each on its own floor, capped at the renderable count. */
+/**
+ * Stable cross-provider project roster. Current models contain assignments from
+ * domain.js; the fallback allocator only protects cached models during an upgrade.
+ */
+export function liveProjectSessions(model) {
+  const sessions = PROVIDER_ROOMS.flatMap((provider) =>
+    sessionsForProvider(model?.providers?.[provider])
+      .filter((session) => session.source === 'live')
+      .map((session) => ({ ...session, provider }))
+  ).sort((left, right) => left.createdAt - right.createdAt
+    || left.provider.localeCompare(right.provider)
+    || String(left.id).localeCompare(String(right.id)));
+
+  const occupied = new Set();
+  for (const session of sessions) {
+    if (session.floorAssignment === 'execution' || session.population >= 3) {
+      session.floorAssignment = 'execution';
+      session.baseSlot = null;
+      continue;
+    }
+    if (session.floorAssignment === 'base'
+      && session.baseSlot >= 0
+      && session.baseSlot < BASE_PROJECT_SLOTS
+      && !occupied.has(session.baseSlot)) {
+      occupied.add(session.baseSlot);
+      continue;
+    }
+    session.floorAssignment = null;
+    session.baseSlot = null;
+  }
+  for (const session of sessions) {
+    if (session.floorAssignment) continue;
+    const slot = Array.from({ length: BASE_PROJECT_SLOTS }, (_, index) => index)
+      .find((index) => !occupied.has(index));
+    if (slot === undefined) {
+      session.floorAssignment = 'execution';
+    } else {
+      session.floorAssignment = 'base';
+      session.baseSlot = slot;
+      occupied.add(slot);
+    }
+  }
+  return sessions;
+}
+
+export function baseFloorSessions(model) {
+  return liveProjectSessions(model)
+    .filter((session) => session.floorAssignment === 'base')
+    .sort((left, right) => left.baseSlot - right.baseSlot);
+}
+
+export function executionSessions(model) {
+  return liveProjectSessions(model).filter((session) => session.floorAssignment === 'execution');
+}
+
+/** Each execution project owns one floor; provider is identity, not floor grouping. */
 export function teamSessions(model, room) {
   if (!PROVIDER_ROOMS.includes(room)) return [];
-  return sessionsForProvider(model?.providers?.[room])
+  return executionSessions(model)
+    .filter((session) => session.provider === room)
     .slice(0, MAX_RENDERED_ANNEXES_PER_PROVIDER);
 }
 
-/** Compatibility surface: cross-provider live work is never co-located. */
 export function sharedFloorSessions(model) {
   void model;
   return [];
@@ -86,99 +132,79 @@ function titleFor(roomMeta, room) {
   return roomMeta?.[room]?.title || room;
 }
 
-function recentImportantEvents(model, room) {
-  const now = Number(model?.generatedAt) || Date.now();
-  return (model?.recentEvents || []).filter((event) => {
-    const age = now - Number(event?.timestamp || 0);
-    if (age < 0 || age > IMPORTANT_EVENT_FRESH_MS) return false;
-    // Finished work is reported to the Owner in person, so a delivery has to be able to
-    // open the Owner floor even when the inbox is empty (signature J).
-    if (room === 'owner') return ['owner_input_required', 'task_completed'].includes(event?.eventType) || event?.targetProvider === 'owner';
-    if (room === 'lobby') return event?.eventType === 'discussion_started' || (event?.participantProviders || []).length > 1;
-    return event?.provider === room && Boolean(event?.important);
-  });
+/** The permanent meeting room uses the latest unmatched discussion start event. */
+export function orderedDiscussionProviders(providers, chairProvider = null) {
+  const participants = [...new Set((providers || []).filter((provider) => PROVIDER_ROOMS.includes(provider)))].slice(0, 4);
+  if (!chairProvider || !participants.includes(chairProvider)) return participants;
+  return [chairProvider, ...participants.filter((provider) => provider !== chairProvider)];
+}
+
+export function activeDiscussionProviders(model) {
+  const events = model?.recentEvents || [];
+  const ended = new Set();
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const key = event?.correlationId || `${event?.provider || ''}:${event?.sessionId || ''}`;
+    if (event?.eventType === 'discussion_ended' || event?.eventType === 'meeting_completed') {
+      ended.add(key);
+      continue;
+    }
+    if (!['discussion_started', 'meeting_started'].includes(event?.eventType) || ended.has(key)) continue;
+    const explicit = orderedDiscussionProviders(event.participantProviders, event.chairProvider);
+    if (explicit.length >= 2) return explicit.slice(0, 4);
+  }
+  for (const provider of PROVIDER_ROOMS) {
+    const pod = (model?.providers?.[provider]?.livePods || []).find((candidate) => candidate.activity === 'discussing');
+    if (!pod) continue;
+    const participants = orderedDiscussionProviders(pod.discussionProviders, pod.discussionChairProvider);
+    if (participants.length >= 2) return participants;
+  }
+  return [];
 }
 
 export function floorPopulationForDisplay(model, room, annexIndex = 0) {
-  // Owner is the permanent resident. Visitors add to the room; they never determine
-  // whether the Owner exists.
-  if (room === 'owner') return 1 + Math.min(3, Number(model?.owner?.inboxCount || 0));
-  if (room === 'lobby') {
-    return Object.values(model?.providers || {}).reduce((sum, provider) => (
-      sum + (provider?.livePods || []).filter((pod) => pod.activity === 'discussing').length
-    ), 0);
-  }
-  if (room === SHARED_FLOOR_KEY) {
-    const total = sharedFloorSessions(model).reduce((sum, session) => sum + session.population, 0);
-    return Math.min(FLOOR_WORKSTATIONS, total);
+  if (room === 'owner') {
+    const projects = baseFloorSessions(model).reduce((sum, session) => sum + Math.min(BASE_PROJECT_CAPACITY, session.population), 0);
+    return 1 + projects + activeDiscussionProviders(model).length;
   }
   if (!PROVIDER_ROOMS.includes(room)) return 0;
-  // One provider floor is one subagent team, so its population is that session's own.
   const session = teamSessions(model, room)[annexIndex];
-  // A recent snapshot may keep a truthful static work card visible, but it never creates
-  // a person. Only lifecycle-backed live sessions contribute office population.
-  return session?.source === 'live' ? Math.min(FLOOR_WORKSTATIONS, session.population) : 0;
+  if (!session) return 0;
+  return Math.min(PEOPLE_PER_ANNEX, session.population);
 }
 
 export function floorHasUsefulWork(spec, model) {
   if (!spec) return false;
-  if (floorPopulationForDisplay(model, spec.room, spec.annexIndex) > 0) return true;
-  if (PROVIDER_ROOMS.includes(spec.room)) {
-    const session = teamSessions(model, spec.room)[spec.annexIndex];
-    if (session?.source === 'snapshot') return true;
-  }
-  if (spec.room === SHARED_FLOOR_KEY) {
-    // Shared live work is forbidden. An unmatched transient cue is skipped instead of
-    // opening an empty cross-provider shell that looks like a workplace.
-    return false;
-  }
-  const events = recentImportantEvents(model, spec.room);
-  if (!events.length) return false;
-  if (!PROVIDER_ROOMS.includes(spec.room)) return true;
-  return events.some((event) => floorForEvent(model, spec.room, event).annexIndex === spec.annexIndex);
+  if (spec.room === 'owner') return true;
+  return floorPopulationForDisplay(model, spec.room, spec.annexIndex) > 0;
 }
 
 export function floorSpecsForModel(model, roomMeta, options = {}) {
-  const activeOnly = Boolean(options.activeOnly);
-  const specs = [];
-  const ownerSpec = { key: 'owner', room: 'owner', annexIndex: 0, annexCount: 1, title: titleFor(roomMeta, 'owner') };
-  // The Owner decision room is an independent, permanent top floor. activeOnly only
-  // applies to work floors and must never hide or merge this room.
-  specs.push(ownerSpec);
-  const liveSpecs = [];
-  const snapshotSpecs = [];
-  for (const room of PROVIDER_ROOMS) {
-    const sessions = teamSessions(model, room);
-    const allSessions = sessionsForProvider(model?.providers?.[room]).length;
-    for (const [annexIndex, session] of sessions.entries()) {
-      // The floor is named after the project or task, not after the provider: the Owner
-      // needs to see which piece of work owns the floor.
-      const label = String(session.label || '').trim();
-      const spec = {
-        key: floorKey(room, annexIndex),
-        room,
-        annexIndex,
-        annexCount: sessions.length,
-        sessionId: session.id,
-        sessionLabel: label,
-        evidenceSource: session.source,
-        updatedAt: Number(session.updatedAt) || 0,
-        overflowSummary: annexIndex === sessions.length - 1 && allSessions > sessions.length,
-        title: label ? `${titleFor(roomMeta, room)}・${label}` : titleFor(roomMeta, room)
-      };
-      if (!activeOnly || floorHasUsefulWork(spec, model)) {
-        (session.source === 'live' ? liveSpecs : snapshotSpecs).push(spec);
-      }
-    }
+  void options;
+  const specs = [{
+    key: 'owner',
+    room: 'owner',
+    annexIndex: 0,
+    annexCount: 1,
+    title: titleFor(roomMeta, 'owner')
+  }];
+  const byProvider = new Map();
+  for (const session of executionSessions(model)) {
+    const annexIndex = byProvider.get(session.provider) || 0;
+    byProvider.set(session.provider, annexIndex + 1);
+    if (annexIndex >= MAX_RENDERED_ANNEXES_PER_PROVIDER) continue;
+    specs.push({
+      key: `execution:${session.id}`,
+      room: session.provider,
+      annexIndex,
+      annexCount: 1,
+      sessionId: session.id,
+      sessionLabel: session.label,
+      evidenceSource: 'live',
+      updatedAt: session.updatedAt,
+      title: session.label || titleFor(roomMeta, session.provider)
+    });
   }
-  // A real task must never be pushed below historical cards. While any Tier-A session
-  // is live, history disappears from the active overlay. With no live work, a bounded
-  // newest-first snapshot digest remains available without pretending to be staffed.
-  snapshotSpecs.sort((left, right) => right.updatedAt - left.updatedAt || left.key.localeCompare(right.key));
-  specs.push(...liveSpecs);
-  if (!liveSpecs.length) specs.push(...snapshotSpecs.slice(0, MAX_VISIBLE_SNAPSHOT_FLOORS));
-  const lobbySpec = { key: 'lobby', room: 'lobby', annexIndex: 0, annexCount: 1, title: titleFor(roomMeta, 'lobby') };
-  if (!activeOnly || floorHasUsefulWork(lobbySpec, model)) specs.push(lobbySpec);
   return specs;
 }
 
@@ -193,11 +219,11 @@ export function currentPresenceOpen(surfaces, provider, now = Date.now()) {
 }
 
 export function livePodsForDisplay(team, surfaces, provider, now = Date.now()) {
+  void surfaces;
+  void provider;
   return Object.values(team?.pods || {}).filter((pod) => {
+    if (pod?.lifecycle === 'completed' && Number(pod.closingUntil) > now) return true;
     if (pod?.lifecycle !== 'active') return false;
-    // A disconnected adapter changes certainty, not lifecycle. Freeze the last reliable
-    // Tier-A pod in grey for a bounded interval. `unknownSinceAt` is the evidence boundary;
-    // falling back to lastActivityAt keeps older persisted state safe to replay.
     if (pod.activity === 'unknown') {
       const unknownAge = now - Number(pod.unknownSinceAt || pod.lastActivityAt || 0);
       return unknownAge >= 0 && unknownAge < UNKNOWN_FREEZE_MS;
@@ -208,31 +234,31 @@ export function livePodsForDisplay(team, surfaces, provider, now = Date.now()) {
 }
 
 export function annexCountForDisplay(livePods = [], snapshotWork = []) {
-  const livePopulation = livePods.reduce((sum, pod) => (
-    sum + Math.max(1, (pod.agents || []).length + Math.max(0, pod.overflowAgentCount || 0))
-  ), 0);
+  const livePopulation = livePods.reduce((sum, pod) => sum + sessionPopulation(pod), 0);
   const snapshotPopulation = snapshotWork.filter((work) => work.recent).reduce((sum, work) => (
     sum + Math.max(1, 1 + (work.agents || []).length)
   ), 0);
   return Math.max(1, Math.ceil(Math.max(livePopulation, snapshotPopulation) / PEOPLE_PER_ANNEX));
 }
 
-/**
- * Which provider floor a session is standing on. Missing or expired session IDs return a
- * neutral compatibility destination that is never rendered as an active shared floor.
- */
 export function floorForSession(model, room, sessionId) {
   const shared = { room: SHARED_FLOOR_KEY, annexIndex: 0 };
-  if (!PROVIDER_ROOMS.includes(room)) return shared;
-  const teams = sessionsForProvider(model?.providers?.[room]);
-  const index = teams.findIndex((session) => matchesSession(session.id, sessionId));
+  if (!PROVIDER_ROOMS.includes(room) || !sessionId) return shared;
+  const session = liveProjectSessions(model).find((candidate) => (
+    candidate.provider === room && matchesSession(candidate.id, sessionId)
+  ));
+  if (!session) return shared;
+  if (session.floorAssignment === 'base') return { room: 'owner', annexIndex: 0 };
+  const providerFloors = teamSessions(model, room);
+  const index = providerFloors.findIndex((candidate) => matchesSession(candidate.id, sessionId));
   if (index < 0) return shared;
-  // A team past the rendered floor cap is summarised on the last floor, not moved into
-  // the shared office: its cue must not open an empty "no solo work" plate.
   return { room, annexIndex: Math.min(index, MAX_RENDERED_ANNEXES_PER_PROVIDER - 1) };
 }
 
 export function floorForEvent(model, room, event) {
+  if (['discussion_started', 'discussion_ended', 'meeting_started', 'meeting_completed'].includes(event?.eventType)) {
+    return { room: 'owner', annexIndex: 0 };
+  }
   return floorForSession(model, room, event?.sessionId);
 }
 
