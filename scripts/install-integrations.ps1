@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 $relaySourceExe = Join-Path $PSScriptRoot 'relay\AIOfficeHookRelay.exe'
 $relaySourceFallback = Join-Path $PSScriptRoot 'hook-relay.ps1'
 $installedRelayPath = ''
+$relayUpdateDeferred = $false
 # Gemini CLI's hook schema defines timeout in milliseconds. Keep this explicit
 # so it is never mistaken for the three-second values used by other providers.
 $GeminiHookTimeoutMilliseconds = 5000
@@ -16,6 +17,29 @@ $GeminiHookTimeoutMilliseconds = 5000
 function Test-AiOfficeCommand {
     param([string]$Command)
     return ($Command -match [regex]::Escape('AIOfficeHookRelay.exe')) -or ($Command -match [regex]::Escape('hook-relay.ps1'))
+}
+
+function Test-AiOfficeSameFile {
+    param([string]$Source, [string]$Destination)
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf) -or -not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+        return $false
+    }
+    $sourceInfo = Get-Item -LiteralPath $Source
+    $destinationInfo = Get-Item -LiteralPath $Destination
+    if ($sourceInfo.Length -ne $destinationInfo.Length) { return $false }
+    $hashFile = {
+        param([string]$Path)
+        $algorithm = [System.Security.Cryptography.SHA256]::Create()
+        $stream = [System.IO.File]::OpenRead($Path)
+        try {
+            return ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '')
+        }
+        finally {
+            $stream.Dispose()
+            $algorithm.Dispose()
+        }
+    }
+    return (& $hashFile $Source) -eq (& $hashFile $Destination)
 }
 
 function Install-AiOfficeRelay {
@@ -28,12 +52,32 @@ function Install-AiOfficeRelay {
     if (-not (Test-Path -LiteralPath $dataRoot)) { New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null }
     if (Test-Path -LiteralPath $relaySourceExe) {
         $destination = Join-Path $dataRoot 'AIOfficeHookRelay.exe'
-        Copy-Item -LiteralPath $relaySourceExe -Destination $destination -Force
+        # A running overlay or hook may keep this executable locked.  If the freshly
+        # built relay is byte-identical, retain the live file instead of failing an
+        # otherwise harmless hook-config update.
+        if (Test-AiOfficeSameFile $relaySourceExe $destination) { return $destination }
+        try {
+            Copy-Item -LiteralPath $relaySourceExe -Destination $destination -Force
+        }
+        catch [System.IO.IOException] {
+            # A visible overlay can keep the relay executable open.  Its current relay
+            # remains usable for the hook merge; report the deferred binary refresh and
+            # let the next launch replace it, rather than failing the entire install.
+            if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) { throw }
+            $script:relayUpdateDeferred = $true
+        }
         return $destination
     }
     if (Test-Path -LiteralPath $relaySourceFallback) {
         $destination = Join-Path $dataRoot 'hook-relay.ps1'
-        Copy-Item -LiteralPath $relaySourceFallback -Destination $destination -Force
+        if (Test-AiOfficeSameFile $relaySourceFallback $destination) { return $destination }
+        try {
+            Copy-Item -LiteralPath $relaySourceFallback -Destination $destination -Force
+        }
+        catch [System.IO.IOException] {
+            if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) { throw }
+            $script:relayUpdateDeferred = $true
+        }
         return $destination
     }
     throw 'No AI Office event relay is available. Build the project before installing integrations.'
@@ -208,16 +252,18 @@ function Install-AiOfficeProvider {
     $userRoot = if ([string]::IsNullOrWhiteSpace($ConfigRoot)) { [Environment]::GetFolderPath('UserProfile') } else { $ConfigRoot }
     switch ($TargetProvider) {
         'codex' {
-            # Codex discovers a user hook source beside ~/.codex/config.toml.
-            # ~/.codex/hooks/hooks.json is reserved for a plugin root and is not a
-            # standalone user-config layer.
-            $targetPath = Join-Path $userRoot '.codex\hooks.json'
-            $legacyPath = Join-Path $userRoot '.codex\hooks\hooks.json'
+            # Codex CLI 0.146.0 loads user command hooks from
+            # ~/.codex/hooks/hooks.json.  The root hooks.json may exist for other
+            # local metadata, but is not the dispatch source on this installed build.
+            # Removing this app's group there must never alter unrelated hooks.
+            # Codex separately requires the user to trust hook commands.
+            $targetPath = Join-Path $userRoot '.codex\hooks\hooks.json'
+            $legacyPath = Join-Path $userRoot '.codex\hooks.json'
             Merge-AiOfficeJsonHooks $targetPath 'codex' @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd', 'PermissionRequest') 3
             # Remove only the AI Office groups from the legacy file. Other hooks remain
             # untouched and the removal routine creates its own backup.
             $legacyMigrated = Remove-AiOfficeJsonHooks $legacyPath
-            return [pscustomobject]@{ provider = 'codex'; installed = $true; path = $targetPath; requiresTrust = $true; legacyMigrated = $legacyMigrated; note = 'Review and trust this hook once in Codex /hooks.' }
+            return [pscustomobject]@{ provider = 'codex'; installed = $true; path = $targetPath; requiresTrust = $true; legacyMigrated = $legacyMigrated; relayUpdateDeferred = $relayUpdateDeferred; note = 'Review and trust this hook once in Codex /hooks.' }
         }
         'claude' {
             $targetPath = Join-Path $userRoot '.claude\settings.json'
@@ -243,7 +289,7 @@ function Uninstall-AiOfficeProvider {
     param([string]$TargetProvider)
     $userRoot = if ([string]::IsNullOrWhiteSpace($ConfigRoot)) { [Environment]::GetFolderPath('UserProfile') } else { $ConfigRoot }
     $paths = @(switch ($TargetProvider) {
-        'codex' { @((Join-Path $userRoot '.codex\hooks.json'), (Join-Path $userRoot '.codex\hooks\hooks.json')) }
+        'codex' { @((Join-Path $userRoot '.codex\hooks\hooks.json'), (Join-Path $userRoot '.codex\hooks.json')) }
         'claude' { @((Join-Path $userRoot '.claude\settings.json')) }
         'gemini' { @((Join-Path $userRoot '.gemini\settings.json')) }
         'grok' { @((Join-Path $userRoot '.grok\hooks\ai-office-dollhouse.json')) }
@@ -257,13 +303,13 @@ function Get-AiOfficeStatus {
     param([string]$TargetProvider)
     $userRoot = if ([string]::IsNullOrWhiteSpace($ConfigRoot)) { [Environment]::GetFolderPath('UserProfile') } else { $ConfigRoot }
     $paths = @(switch ($TargetProvider) {
-        'codex' { @((Join-Path $userRoot '.codex\hooks.json')) }
+        'codex' { @((Join-Path $userRoot '.codex\hooks\hooks.json')) }
         'claude' { @((Join-Path $userRoot '.claude\settings.json')) }
         'gemini' { @((Join-Path $userRoot '.gemini\settings.json')) }
         'grok' { @((Join-Path $userRoot '.grok\hooks\ai-office-dollhouse.json')) }
     })
     $activePath = $paths | Where-Object { Test-AiOfficeMarker $_ } | Select-Object -First 1
-    $legacyPath = if ($TargetProvider -eq 'codex') { Join-Path $userRoot '.codex\hooks\hooks.json' } else { '' }
+    $legacyPath = if ($TargetProvider -eq 'codex') { Join-Path $userRoot '.codex\hooks.json' } else { '' }
     [pscustomobject]@{
         provider = $TargetProvider
         installed = [bool]$activePath
