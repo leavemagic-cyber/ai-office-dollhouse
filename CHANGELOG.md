@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.9 - 2026-08-17
+
+- Codex 正常安裝路徑現在會加入官方使用者層 lifecycle hook，並交由 Codex 的 `/hooks` 正常審閱信任；未信任時仍由唯讀 session observer 接續，不繞過信任或偽裝 managed hook。
+- 明確忽略本機瀏覽器／視覺測試工作區與含固定人偶的透明場景研究稿；runtime 繼續只使用無人物、可讓真實人偶疊加的 scene plate。
+
 ## 0.3.8 - 2026-08-17
 
 - Codex Desktop 在不接受或繞過 hook 信任時，可唯讀觀察近期 session 記錄；只保存雜湊識別與結構動作，不讀寫提示詞、回覆或工具內容。

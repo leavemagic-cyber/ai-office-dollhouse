@@ -22,5 +22,7 @@ Thumbs.db
 *.crt
 *.der
 release/
+.runtime-test/
+resources/scenes/*-transparent.png
 scripts/relay/*.exe
 scripts/click-through/*.exe

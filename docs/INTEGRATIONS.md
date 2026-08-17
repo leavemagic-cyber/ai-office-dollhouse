@@ -2,13 +2,13 @@
 
 ## 安裝原則
 
-發行包安裝器會先備份既有設定並保留無關 hook，再以暫存檔原子合併允許的生命週期 hook。程式啟動時也會檢查缺少的整合，重複執行不會重複加入。Codex Desktop 不會由安裝器或啟動流程自動加入 hook；它以唯讀 session 記錄觀察器運作，不要求、接受或繞過 hook 信任。
+發行包安裝器會先備份既有設定並保留無關 hook，再以暫存檔原子合併允許的生命週期 hook。程式啟動時也會檢查缺少的整合，重複執行不會重複加入。Codex Desktop 會寫入官方使用者層 hook 設定；Codex 仍會在正常的 `/hooks` 審閱流程中要求信任目前定義。未信任、停用或無法使用 hook 時，唯讀 session 記錄觀察器持續作為 fallback；本程式不繞過信任，也不偽裝 managed hook。
 
 ## 支援事件
 
 | Provider | 設定位置 | 事件範圍 |
 |---|---|---|
-| Codex | `~/.codex/sessions`（唯讀預設）；`~/.codex/hooks.json` 僅供使用者自行信任時選用 | 唯讀 session 的 task／turn／請示／協作請求／patch 結構事件；已信任 hook 才有 SessionStart、SubagentStart/Stop 等 |
+| Codex | `~/.codex/hooks.json`（正常 hook）；`~/.codex/sessions`（唯讀 fallback） | 正常審閱信任後提供 SessionStart、SubagentStart/Stop 等 Tier-A 生命週期；唯讀 session 另提供 task／turn／請示／協作請求／patch 的 Tier-B 結構事件 |
 | Claude | `~/.claude/settings.json` | SessionStart、UserPromptSubmit、Stop、SubagentStart/Stop、SessionEnd、Notification |
 | Gemini | `~/.gemini/settings.json` | SessionStart、BeforeAgent、AfterAgent、SessionEnd |
 | Grok | `~/.grok/hooks/ai-office-dollhouse.json` | SessionStart、UserPromptSubmit、Stop、SubagentStart/Stop、SessionEnd、Notification |

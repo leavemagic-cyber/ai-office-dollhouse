@@ -79,8 +79,8 @@ $integrationScript = Join-Path $InstallRoot 'scripts\install-integrations.ps1'
 $integration = $null
 if ($SkipIntegrations) {
     # Package/file verification does not need to alter any provider configuration.
-    # This is especially useful for validating the Codex read-only observer, which
-    # neither needs nor may trigger a Codex hook trust flow.
+    # The Codex read-only observer remains available when all hook integration is
+    # deliberately skipped for a local verification run.
     $integration = [pscustomobject]@{
         ok = $true
         skipped = $true
@@ -93,24 +93,26 @@ if ($SkipIntegrations) {
         }
     }
 } elseif (Test-Path -LiteralPath $integrationScript) {
-    # Codex Desktop hook trust is never implied by installing this application.
-    # Its read-only session observer works without a hook, so only the providers
-    # that have no comparable trust gate are added automatically.
+    # Install every provider's official user-level integration. Codex itself still
+    # requires its normal /hooks review before a non-managed command hook can run;
+    # this installer never bypasses or impersonates that review.
     $integrationResults = @()
-    foreach ($provider in @('claude', 'gemini', 'grok')) {
+    foreach ($provider in @('codex', 'claude', 'gemini', 'grok')) {
         $integrationText = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $integrationScript -Provider $provider -Action install
         if ($LASTEXITCODE -ne 0) { throw "Application files were installed, but $provider lifecycle hook integration failed." }
         $providerIntegration = $integrationText | Select-Object -Last 1 | ConvertFrom-Json
         if (-not $providerIntegration.ok) { throw "Application files were installed, but $provider lifecycle hook integration reported failure." }
         foreach ($providerResult in @($providerIntegration.results)) { $integrationResults += $providerResult }
     }
+    $codexHook = @($integrationResults | Where-Object { $_.provider -eq 'codex' } | Select-Object -First 1)
     $integration = [pscustomobject]@{
         ok = $true
         results = @($integrationResults)
+        codexHook = if ($codexHook.Count) { $codexHook[0] } else { $null }
         codexObserver = [pscustomobject]@{
             provider = 'codex'
             mode = 'read_only_session_observer'
-            automaticHookInstallSkipped = $true
+            fallbackWhenHookUntrusted = $true
         }
     }
 }

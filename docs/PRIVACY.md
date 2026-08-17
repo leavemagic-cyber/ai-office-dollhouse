@@ -21,7 +21,7 @@
 
 - 程式不呼叫 LLM API，不傳送網路請求，不控制或調整任何 AI 程序優先權。
 - 只把自己的 Neutralino／WebView／偵測程序設為 `BelowNormal`，讓主線工作優先。
-- 安裝器與第一次啟動只自動合併 Claude、Gemini、Grok 的允許生命週期 hook。Codex Desktop 一律使用唯讀本機 session 記錄觀察器；它不寫入 Codex hook 設定、不要求或接受 hook 信任，也不使用任何信任繞過。
+- 安裝器與第一次啟動會合併所有支援 provider 的允許生命週期 hook，包括 Codex 的官方使用者層設定。Codex 對非 managed command hook 的信任仍由其正常 `/hooks` 審閱流程決定；本程式不使用信任繞過，也不偽裝 managed hook。無法執行 hook 時，Codex 唯讀本機 session 記錄觀察器仍可運作。
 - hook 一律 fail-open：任何解析、寫檔或鎖定錯誤都輸出空 JSON 並以成功碼離開，不阻塞主線 AI。
 - 安裝器只合併本專案 hook；既有設定會先備份。
 

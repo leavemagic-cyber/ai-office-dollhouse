@@ -229,16 +229,21 @@ test('Codex session observer maps only direct metadata to special Tier-B cues an
     'a direct same-session user message clears the pending Owner request without retaining its text');
 });
 
-test('Codex read-only fallback never installs or trusts a Codex hook automatically', () => {
+test('Codex installs its official hook configuration and keeps the read-only observer as fallback', () => {
   const appInstaller = readFileSync(join(root, 'scripts', 'install-app.ps1'), 'utf8');
   const appMain = readFileSync(join(root, 'resources', 'js', 'main.js'), 'utf8');
-  assert.match(appInstaller, /@\('claude', 'gemini', 'grok'\)/);
+  const integrationScript = readFileSync(join(root, 'scripts', 'install-integrations.ps1'), 'utf8');
+  assert.match(appInstaller, /@\('codex', 'claude', 'gemini', 'grok'\)/);
   assert.doesNotMatch(appInstaller, /-Provider all -Action install/);
   assert.match(appInstaller, /automaticHookInstallSkipped = \$true/);
+  assert.match(appInstaller, /fallbackWhenHookUntrusted = \$true/);
   assert.match(appInstaller, /\[switch\]\$SkipIntegrations/);
   assert.match(appInstaller, /if \(\$SkipIntegrations\)/);
-  assert.match(appMain, /item\.provider !== 'codex'/);
-  assert.doesNotMatch(appMain, /Codex 首次可能需信任一次/);
+  assert.doesNotMatch(appMain, /item\.provider !== 'codex'/);
+  assert.match(appMain, /Codex performs its own normal \/hooks review/);
+  assert.match(integrationScript, /Review and trust this hook once in Codex \/hooks\./);
+  assert.doesNotMatch(appInstaller, /dangerously-bypass-hook-trust/);
+  assert.doesNotMatch(integrationScript, /dangerously-bypass-hook-trust/);
 });
 
 test('local packaging preserves earlier release artifacts and visual-test material', () => {
