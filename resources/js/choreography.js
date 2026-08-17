@@ -1,7 +1,17 @@
 import { floorForEvent, PROVIDER_ROOMS, SHARED_FLOOR_KEY } from './floor-layout.js';
+import { isAnimationEvidenceEligible } from './event-evidence.js';
 
 export const SIGNATURE_EVENTS = Object.freeze({
+  // A task start is an arrival of the observed task, not a claim that a subagent
+  // was spawned. The source-evidence contract is provider-neutral.
+  task_started: { code: 'A', kind: 'arrival', duration: 8_000, priority: 5 },
   agent_spawned: { code: 'A', kind: 'arrival', duration: 8_000, priority: 5 },
+  // These are deliberately narrower than a handoff or a meeting: a
+  // dispatch/message is observed, but the richer relationship is never inferred.
+  delegation_requested: { code: null, kind: 'delegation_request', duration: 7_000, priority: 6 },
+  coordination_message: { code: null, kind: 'coordination_message', duration: 6_500, priority: 6 },
+  patch_apply_ended: { code: null, kind: 'patch_apply_ended', duration: 6_500, priority: 5 },
+  task_interrupted: { code: null, kind: 'error', duration: 10_000, priority: 9 },
   acting_lead_handoff: { code: 'B', kind: 'handoff', duration: 8_000, priority: 7 },
   discussion_started: { code: 'C', kind: 'discussion', duration: 10_000, priority: 6 },
   discussion_ended: { code: null, kind: 'discussion_return', duration: 8_000, priority: 6 },
@@ -22,6 +32,7 @@ export const SIGNATURE_EVENTS = Object.freeze({
 function signatureCandidates(model, now) {
   const candidates = [];
   for (const event of model?.recentEvents || []) {
+    if (!isAnimationEvidenceEligible(event)) continue;
     const definition = SIGNATURE_EVENTS[event.eventType];
     if (!definition || now - event.timestamp < -1_000 || now - event.timestamp > 20_000) continue;
     candidates.push({
@@ -32,6 +43,7 @@ function signatureCandidates(model, now) {
     });
   }
   for (const stopped of (model?.recentEvents || []).filter((event) => event.eventType === 'session_stopped')) {
+    if (stopped.animationEligible === false) continue;
     if (now - stopped.timestamp < -1_000 || now - stopped.timestamp > 20_000) continue;
     candidates.push({
       id: `close:${stopped.eventId}`,
@@ -47,7 +59,8 @@ function signatureCandidates(model, now) {
   }
   for (const provider of PROVIDER_ROOMS) {
     const deliveries = (model?.recentEvents || []).filter((event) =>
-      event.provider === provider && event.eventType === 'agent_finished' && now - event.timestamp >= -1_000 && now - event.timestamp < 8_000
+      isAnimationEvidenceEligible(event)
+      && event.provider === provider && event.eventType === 'agent_finished' && now - event.timestamp >= -1_000 && now - event.timestamp < 8_000
     );
     if (deliveries.length < 2) continue;
     const newest = Math.max(...deliveries.map((event) => event.timestamp));

@@ -176,6 +176,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\set-low-priority.ps1') -
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\desktop-luminance.ps1') -Destination (Join-Path $packageRoot 'scripts\desktop-luminance.ps1')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\screen-metrics.ps1') -Destination (Join-Path $packageRoot 'scripts\screen-metrics.ps1')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\snapshot-work.mjs') -Destination (Join-Path $packageRoot 'scripts\snapshot-work.mjs')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\observe-codex-sessions.mjs') -Destination (Join-Path $packageRoot 'scripts\observe-codex-sessions.mjs')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\hook-relay.ps1') -Destination (Join-Path $packageRoot 'scripts\hook-relay.ps1')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\relay\AIOfficeHookRelay.exe') -Destination (Join-Path $packageRoot 'scripts\relay\AIOfficeHookRelay.exe')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\click-through\AIOfficeClickThrough.exe') -Destination (Join-Path $packageRoot 'scripts\click-through\AIOfficeClickThrough.exe')

@@ -77,9 +77,26 @@ foreach ($installerName in @('Install-AI-Office-Dollhouse.cmd', 'Install-AI-Offi
 $integrationScript = Join-Path $InstallRoot 'scripts\install-integrations.ps1'
 $integration = $null
 if (Test-Path -LiteralPath $integrationScript) {
-    $integrationText = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $integrationScript -Provider all -Action install
-    if ($LASTEXITCODE -ne 0) { throw 'Application files were installed, but lifecycle hook integration failed.' }
-    $integration = $integrationText | Select-Object -Last 1 | ConvertFrom-Json
+    # Codex Desktop hook trust is never implied by installing this application.
+    # Its read-only session observer works without a hook, so only the providers
+    # that have no comparable trust gate are added automatically.
+    $integrationResults = @()
+    foreach ($provider in @('claude', 'gemini', 'grok')) {
+        $integrationText = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $integrationScript -Provider $provider -Action install
+        if ($LASTEXITCODE -ne 0) { throw "Application files were installed, but $provider lifecycle hook integration failed." }
+        $providerIntegration = $integrationText | Select-Object -Last 1 | ConvertFrom-Json
+        if (-not $providerIntegration.ok) { throw "Application files were installed, but $provider lifecycle hook integration reported failure." }
+        foreach ($providerResult in @($providerIntegration.results)) { $integrationResults += $providerResult }
+    }
+    $integration = [pscustomobject]@{
+        ok = $true
+        results = @($integrationResults)
+        codexObserver = [pscustomobject]@{
+            provider = 'codex'
+            mode = 'read_only_session_observer'
+            automaticHookInstallSkipped = $true
+        }
+    }
 }
 
 $shell = New-Object -ComObject WScript.Shell

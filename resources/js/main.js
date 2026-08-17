@@ -259,6 +259,10 @@ function compactModel(state, existingSnapshot, resourceManager, systemMetrics, s
       chairProvider: event.chairProvider || null,
       authorityScope: visibleLabel(event.authorityScope, privacy, ''),
       taskLabel: visibleLabel(event.taskLabel, privacy, '工作'),
+      observationTier: event.observationTier,
+      sourceConfidence: event.sourceConfidence,
+      sourceEvidence: event.sourceEvidence,
+      animationEligible: event.animationEligible,
       important: event.important
     }))
   };
@@ -459,7 +463,12 @@ async function startTower() {
     if (!bridge.isNative) return { installed: [], alreadyReady: [] };
     const status = await bridge.integrationStatus();
     if (!status?.ok) throw new Error(status?.error || '整合狀態讀取失敗');
-    const missing = (status.results || []).filter((item) => !item.installed).map((item) => item.provider);
+    // Codex Desktop hook trust is an explicit user decision. The read-only
+    // session observer below is the fallback when that decision cannot be made,
+    // so startup must never add a Codex hook or trigger its trust flow.
+    const missing = (status.results || [])
+      .filter((item) => !item.installed && item.provider !== 'codex')
+      .map((item) => item.provider);
     const installed = [];
     for (const provider of missing) {
       await bridge.installIntegration(provider);
@@ -636,10 +645,9 @@ async function startTower() {
       : unknownCount
         ? `${unknownCount} 個狀態未確認任務（凍結）`
         : recentSnapshots ? `${recentSnapshots} 個近期既有工作快照` : '未收到進行中工作事件';
-    const integrationSummary = Object.entries(currentModel.integrations || {})
-      .map(([provider, status]) => `${provider}: ${status.state}${status.lastObservedAt ? ` @ ${new Date(status.lastObservedAt).toLocaleTimeString('zh-TW', { hour12: false })}` : ''}`)
-      .join('；');
-    tower.title = integrationSummary;
+    // The overlay is a wordless dollhouse. Integration evidence remains in the
+    // local state file for verification, but is never exposed as a hover tooltip.
+    tower.removeAttribute('title');
     tower.dataset.truth = liveCount ? 'tier-a-live' : unknownCount ? 'tier-a-unknown' : recentSnapshots ? 'snapshot-only' : 'no-work-event';
     const modeButton = document.getElementById('tower-mode');
     const modeLabel = ({ full: '完整', low: '低動態', dnd: '勿擾', important: '重要事件' })[settings.mode];
@@ -877,11 +885,27 @@ async function startTower() {
   }, 500);
 
   discovery.start();
+  let codexObserverBusy = false;
+  async function refreshCodexSessionObserver() {
+    if (codexObserverBusy) return;
+    codexObserverBusy = true;
+    try {
+      const observed = await bridge.observeCodexSessions();
+      if (Number(observed?.emitted || 0) > 0) {
+        await inbox.poll();
+        degradeStaleSessions(state, Date.now());
+        scheduleBroadcast();
+      }
+    } finally {
+      codexObserverBusy = false;
+    }
+  }
+  await refreshCodexSessionObserver();
   refreshExistingSnapshot();
   ensureIntegrationCoverage()
     .then((integrationResult) => {
       if (integrationResult?.installed?.length) {
-        document.getElementById('tower-message').textContent = `已自動啟用 ${integrationResult.installed.join('、')} 精準偵測；Codex 首次可能需信任一次。`;
+        document.getElementById('tower-message').textContent = `已自動啟用 ${integrationResult.installed.join('、')} 精準偵測；Codex 使用唯讀 session 記錄。`;
       }
       integrationCoverage = integrationResult?.results || [];
       scheduleBroadcast();
@@ -894,6 +918,7 @@ async function startTower() {
     degradeStaleSessions(state, Date.now());
     scheduleBroadcast();
   }, 2000);
+  setInterval(refreshCodexSessionObserver, 2000);
   setInterval(refreshExistingSnapshot, 30_000);
 }
 

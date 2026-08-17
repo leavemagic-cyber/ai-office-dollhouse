@@ -208,6 +208,20 @@ internal static class AIOfficeHookRelay
         }
     }
 
+    private static string SourceEvidence(string eventType)
+    {
+        switch (eventType)
+        {
+            case "agent_spawned": return "hook:subagent_started";
+            case "agent_finished": return "hook:subagent_finished";
+            case "agent_failed": return "hook:subagent_failed";
+            case "agent_cancelled": return "hook:subagent_cancelled";
+            case "task_completed": return "hook:task_completed";
+            case "owner_input_required": return "hook:owner_input_required";
+            default: return "hook:lifecycle";
+        }
+    }
+
     private static void AppendWithRetry(string path, string line)
     {
         for (int attempt = 0; attempt < 4; attempt++)
@@ -288,6 +302,7 @@ internal static class AIOfficeHookRelay
         officeEvent["toolName"] = Clip(rawTool, 30);
         officeEvent["observationTier"] = "A";
         officeEvent["sourceConfidence"] = "structured";
+        officeEvent["sourceEvidence"] = SourceEvidence(eventType);
         officeEvent["important"] = eventType == "owner_input_required" || eventType == "task_completed" || eventType == "session_stopped" || eventType == "agent_failed";
 
         string dataDirectory = Environment.GetEnvironmentVariable("AI_OFFICE_DATA_DIR");
