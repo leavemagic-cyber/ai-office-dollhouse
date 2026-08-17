@@ -689,24 +689,6 @@ export function drawPlate(ctx, project, theme, progress = 1, layout = null) {
   }
 }
 
-export function drawGuides(ctx, project, theme, height, progress = 1, layout = null) {
-  const points = layout?.guidePoints || [[0, 0], [PLATE.mainWidth, 0], [PLATE.mainWidth, PLATE.gridDepth], [0, PLATE.gridDepth]];
-  ctx.save();
-  ctx.strokeStyle = theme.guide;
-  ctx.globalAlpha = .55 * clamp(progress);
-  ctx.setLineDash([2, 3]);
-  ctx.lineWidth = .7;
-  for (const [gx, gy] of points) {
-    const [x, y] = project(gx, gy);
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, height);
-    ctx.stroke();
-    void y;
-  }
-  ctx.restore();
-}
-
 /** A short flight on the front-left of the plate: the on-plate entry point (spec 2, 垂直語彙). */
 export function drawStairs(ctx, project, progress = 1) {
   // Drawn the way a floor plan draws a stair: a flat run of treads with a direction arrow.
@@ -735,30 +717,6 @@ export function drawStairs(ctx, project, progress = 1) {
   const [leftX, leftY] = project(mid - .35, near + .8);
   const [rightX, rightY] = project(mid + .35, near + .8);
   strokePoly(ctx, [[leftX, leftY], [tipX, tipY], [rightX, rightY]], { width: .45, progress: arrow });
-}
-
-/** Elevator rail on the right-rear guide plus the shared wireframe cue car. */
-export function drawElevator(ctx, project, theme, height, { car = null, progress = 1 } = {}) {
-  const [railX] = project(PLATE.gridWidth, 0);
-  ctx.save();
-  ctx.strokeStyle = theme.soft;
-  ctx.globalAlpha = .5 * clamp(progress);
-  ctx.lineWidth = .5;
-  ctx.setLineDash([2, 3]);
-  ctx.beginPath();
-  ctx.moveTo(railX + 5, 0);
-  ctx.lineTo(railX + 5, height);
-  ctx.stroke();
-  ctx.restore();
-  if (!car) return;
-  const carY = clamp(car.position) * (height - 16) + 4;
-  ctx.save();
-  ctx.strokeStyle = theme.stroke;
-  ctx.globalAlpha = clamp(progress);
-  strokePoly(ctx, [[railX + 1, carY], [railX + 9, carY], [railX + 9, carY + 11], [railX + 1, carY + 11]], { close: true, width: .6 });
-  strokeLine(ctx, [railX + 5, carY], [railX + 5, carY - 4], { width: .45, alpha: .7 });
-  if (car.occupied) dot(ctx, railX + 5, carY + 3, .7, theme.soft);
-  ctx.restore();
 }
 
 // ---------------------------------------------------------------------------

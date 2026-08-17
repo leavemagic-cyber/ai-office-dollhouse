@@ -259,6 +259,10 @@ function compactModel(state, existingSnapshot, resourceManager, systemMetrics, s
       chairProvider: event.chairProvider || null,
       authorityScope: visibleLabel(event.authorityScope, privacy, ''),
       taskLabel: visibleLabel(event.taskLabel, privacy, '工作'),
+      observationTier: event.observationTier,
+      sourceConfidence: event.sourceConfidence,
+      sourceEvidence: event.sourceEvidence,
+      animationEligible: event.animationEligible,
       important: event.important
     }))
   };
@@ -459,7 +463,12 @@ async function startTower() {
     if (!bridge.isNative) return { installed: [], alreadyReady: [] };
     const status = await bridge.integrationStatus();
     if (!status?.ok) throw new Error(status?.error || '整合狀態讀取失敗');
-    const missing = (status.results || []).filter((item) => !item.installed).map((item) => item.provider);
+    // Install the official user-level Codex hook configuration just like the
+    // other providers. Codex performs its own normal /hooks review before it
+    // runs a non-managed command hook; the observer below remains the fallback.
+    const missing = (status.results || [])
+      .filter((item) => !item.installed)
+      .map((item) => item.provider);
     const installed = [];
     for (const provider of missing) {
       await bridge.installIntegration(provider);
@@ -548,6 +557,12 @@ async function startTower() {
     });
     renderer.setTheme(sketchTheme);
     renderer.setProjection(settings.projection);
+    // These are the two owner-approved, text-free room compositions.  Their floors and
+    // walls are transparent; only grayscale furniture is baked in.  Live actors remain
+    // exclusively in RoomRenderer's event-driven draw pass above the image.
+    renderer.setSceneAsset(spec.room === 'owner'
+      ? 'scenes/first-floor-static.png'
+      : 'scenes/execution-floor-static.png');
     renderer.setPhase('entering', performance.now());
     const view = { ...spec, card, head, name, status, source, clock, caret, canvas, renderer, inView: true, leavingTimer: null, orderIndex: floorViews.size };
     floorViews.set(spec.key, view);
@@ -630,10 +645,9 @@ async function startTower() {
       : unknownCount
         ? `${unknownCount} 個狀態未確認任務（凍結）`
         : recentSnapshots ? `${recentSnapshots} 個近期既有工作快照` : '未收到進行中工作事件';
-    const integrationSummary = Object.entries(currentModel.integrations || {})
-      .map(([provider, status]) => `${provider}: ${status.state}${status.lastObservedAt ? ` @ ${new Date(status.lastObservedAt).toLocaleTimeString('zh-TW', { hour12: false })}` : ''}`)
-      .join('；');
-    tower.title = integrationSummary;
+    // The overlay is a wordless dollhouse. Integration evidence remains in the
+    // local state file for verification, but is never exposed as a hover tooltip.
+    tower.removeAttribute('title');
     tower.dataset.truth = liveCount ? 'tier-a-live' : unknownCount ? 'tier-a-unknown' : recentSnapshots ? 'snapshot-only' : 'no-work-event';
     const modeButton = document.getElementById('tower-mode');
     const modeLabel = ({ full: '完整', low: '低動態', dnd: '勿擾', important: '重要事件' })[settings.mode];
@@ -799,6 +813,13 @@ async function startTower() {
     settings.overlayWidth = nextWidth;
     synchronizeOverlayWindow(activeFloorCount);
   };
+  const nudgeResize = (amount) => {
+    const nextWidth = boundedInteger(settings.overlayWidth + amount, settings.overlayWidth, MIN_OVERLAY_WIDTH, MAX_OVERLAY_WIDTH);
+    if (nextWidth === settings.overlayWidth) return;
+    settings.overlayWidth = nextWidth;
+    synchronizeOverlayWindow(activeFloorCount);
+    saveSettings(settings);
+  };
   const completeResize = (event) => {
     if (!resizeState || event.pointerId !== resizeState.pointerId) return;
     try { resizeState.element.releasePointerCapture(event.pointerId); } catch { /* already released */ }
@@ -811,6 +832,25 @@ async function startTower() {
     grip.addEventListener('pointerup', completeResize);
     grip.addEventListener('pointercancel', completeResize);
   }
+
+  // The translucent edge grips are deliberately passive over working windows.  This
+  // shortcut gives the visible corner handle a precise alternative: focus it and use
+  // arrows/+/- or hold Ctrl while scrolling on the title bar/handle.
+  const resizeButton = document.getElementById('tower-resize');
+  resizeButton.addEventListener('keydown', (event) => {
+    const grow = ['ArrowUp', 'ArrowRight', '+', '='];
+    const shrink = ['ArrowDown', 'ArrowLeft', '-'];
+    if (!grow.includes(event.key) && !shrink.includes(event.key)) return;
+    event.preventDefault();
+    nudgeResize(grow.includes(event.key) ? 16 : -16);
+  });
+  const wheelResize = (event) => {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    nudgeResize(event.deltaY < 0 ? 16 : -16);
+  };
+  resizeButton.addEventListener('wheel', wheelResize, { passive: false });
+  document.getElementById('tower-drag').addEventListener('wheel', wheelResize, { passive: false });
 
   document.getElementById('tower-drag').addEventListener('pointerup', (event) => {
     if (event.target.closest('.window-actions')) return;
@@ -845,11 +885,27 @@ async function startTower() {
   }, 500);
 
   discovery.start();
+  let codexObserverBusy = false;
+  async function refreshCodexSessionObserver() {
+    if (codexObserverBusy) return;
+    codexObserverBusy = true;
+    try {
+      const observed = await bridge.observeCodexSessions();
+      if (Number(observed?.emitted || 0) > 0) {
+        await inbox.poll();
+        degradeStaleSessions(state, Date.now());
+        scheduleBroadcast();
+      }
+    } finally {
+      codexObserverBusy = false;
+    }
+  }
+  await refreshCodexSessionObserver();
   refreshExistingSnapshot();
   ensureIntegrationCoverage()
     .then((integrationResult) => {
       if (integrationResult?.installed?.length) {
-        document.getElementById('tower-message').textContent = `已自動啟用 ${integrationResult.installed.join('、')} 精準偵測；Codex 首次可能需信任一次。`;
+        document.getElementById('tower-message').textContent = `已自動啟用 ${integrationResult.installed.join('、')} 精準偵測；Codex 使用唯讀 session 記錄。`;
       }
       integrationCoverage = integrationResult?.results || [];
       scheduleBroadcast();
@@ -862,6 +918,7 @@ async function startTower() {
     degradeStaleSessions(state, Date.now());
     scheduleBroadcast();
   }, 2000);
+  setInterval(refreshCodexSessionObserver, 2000);
   setInterval(refreshExistingSnapshot, 30_000);
 }
 

@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $false)][string]$SourceRoot = '',
     [Parameter(Mandatory = $false)][string]$InstallRoot = '',
+    [Parameter(Mandatory = $false)][switch]$SkipIntegrations,
     [Parameter(Mandatory = $false)][switch]$Launch
 )
 
@@ -76,10 +77,44 @@ foreach ($installerName in @('Install-AI-Office-Dollhouse.cmd', 'Install-AI-Offi
 
 $integrationScript = Join-Path $InstallRoot 'scripts\install-integrations.ps1'
 $integration = $null
-if (Test-Path -LiteralPath $integrationScript) {
-    $integrationText = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $integrationScript -Provider all -Action install
-    if ($LASTEXITCODE -ne 0) { throw 'Application files were installed, but lifecycle hook integration failed.' }
-    $integration = $integrationText | Select-Object -Last 1 | ConvertFrom-Json
+if ($SkipIntegrations) {
+    # Package/file verification does not need to alter any provider configuration.
+    # The Codex read-only observer remains available when all hook integration is
+    # deliberately skipped for a local verification run.
+    $integration = [pscustomobject]@{
+        ok = $true
+        skipped = $true
+        reason = 'explicit_skip'
+        results = @()
+        codexObserver = [pscustomobject]@{
+            provider = 'codex'
+            mode = 'read_only_session_observer'
+            automaticHookInstallSkipped = $true
+        }
+    }
+} elseif (Test-Path -LiteralPath $integrationScript) {
+    # Install every provider's official user-level integration. Codex itself still
+    # requires its normal /hooks review before a non-managed command hook can run;
+    # this installer never bypasses or impersonates that review.
+    $integrationResults = @()
+    foreach ($provider in @('codex', 'claude', 'gemini', 'grok')) {
+        $integrationText = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $integrationScript -Provider $provider -Action install
+        if ($LASTEXITCODE -ne 0) { throw "Application files were installed, but $provider lifecycle hook integration failed." }
+        $providerIntegration = $integrationText | Select-Object -Last 1 | ConvertFrom-Json
+        if (-not $providerIntegration.ok) { throw "Application files were installed, but $provider lifecycle hook integration reported failure." }
+        foreach ($providerResult in @($providerIntegration.results)) { $integrationResults += $providerResult }
+    }
+    $codexHook = @($integrationResults | Where-Object { $_.provider -eq 'codex' } | Select-Object -First 1)
+    $integration = [pscustomobject]@{
+        ok = $true
+        results = @($integrationResults)
+        codexHook = if ($codexHook.Count) { $codexHook[0] } else { $null }
+        codexObserver = [pscustomobject]@{
+            provider = 'codex'
+            mode = 'read_only_session_observer'
+            fallbackWhenHookUntrusted = $true
+        }
+    }
 }
 
 $shell = New-Object -ComObject WScript.Shell

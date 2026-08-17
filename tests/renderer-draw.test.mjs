@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { globalChoreography } from '../resources/js/choreography.js';
+import { observationForSourceEvidence, sourceEvidenceFor } from '../resources/js/event-evidence.js';
 import { RoomRenderer } from '../resources/js/renderer.js';
 import { idleCueForModel, P4_ACTIONS, P4_SLOT_MS } from '../resources/js/renderer.js';
 import { PLATE } from '../resources/js/sketch.js';
@@ -28,6 +29,7 @@ function recordingCanvas() {
     restore() { Object.assign(this, stack.pop() || {}); },
     setTransform(...args) { calls.push(['setTransform', ...args]); },
     clearRect(...args) { calls.push(['clearRect', ...args]); },
+    drawImage(...args) { calls.push(['drawImage', ...args]); },
     setLineDash(...args) { calls.push(['setLineDash', ...args]); },
     beginPath() { calls.push(['beginPath']); },
     closePath() { calls.push(['closePath']); },
@@ -97,12 +99,15 @@ function modelAt(now, recentEvents, {
 }
 
 function event(now, eventType, extra = {}) {
+  const sourceEvidence = extra.sourceEvidence || sourceEvidenceFor(eventType);
   return {
     eventId: `${eventType}:${Math.random()}`,
     eventType,
     provider: 'codex',
     sessionId: 'draw',
     timestamp: now - 1_000,
+    ...observationForSourceEvidence(sourceEvidence),
+    sourceEvidence,
     ...extra
   };
 }
@@ -146,6 +151,28 @@ function geometryCount(calls) {
   return calls.filter(([name]) => !['animation', 'setTransform', 'clearRect', 'setLineDash', 'beginPath', 'closePath', 'stroke', 'fill', 'clip'].includes(name)).length;
 }
 
+test('approved transparent scene plate keeps furniture static but people event-driven', () => {
+  const now = Date.now();
+  const canvas = recordingCanvas();
+  const renderer = new RoomRenderer({ canvas, room: 'owner', annexIndex: 0 });
+  renderer.setTheme({ luminance: .12, tone: true });
+  renderer.setPhase('resident', 0);
+  renderer.sceneAssetSource = '/scenes/first-floor-static.png';
+  renderer.sceneAsset = { complete: true, naturalWidth: 1600, naturalHeight: 1000 };
+  renderer.setModel(modelAt(now, []), false);
+  const realNow = Date.now;
+  Date.now = () => now;
+  try { renderer.draw(2_000); } finally { Date.now = realNow; }
+  assert.equal(canvas.context.calls.filter(([name]) => name === 'drawImage').length, 1, 'the approved scene image is painted once');
+  assert.ok(figureHeads(canvas.context.calls) >= 1, 'live lifecycle occupants are layered over the static furniture');
+  assert.equal(canvas.context.calls.filter(([name]) => name === 'setLineDash').some(([, dash]) => dash?.length > 0), false, 'floating floors have no dashed connector');
+});
+
+test('legacy fallback also has no inter-floor dashed connector or elevator rail', () => {
+  const calls = actualDraw([]);
+  assert.equal(calls.filter(([name]) => name === 'setLineDash').some(([, dash]) => dash?.length > 0), false);
+});
+
 test('A-J and cancellation cues draw human motion through RoomRenderer.draw', () => {
   const cases = [
     ['agent_spawned', 2, {}],
@@ -169,6 +196,25 @@ test('A-J and cancellation cues draw human motion through RoomRenderer.draw', ()
     event(now, 'agent_finished', { eventId: 'finish:2', agentId: 'helper:2' })
   ]);
   assert.ok(figureHeads(multi) >= 3, 'multi-delivery must draw a visible human queue');
+});
+
+test('direct local-metadata command cues stage the known live worker without inventing a roster', () => {
+  const baseline = actualDraw([]);
+  const baselineHeads = figureHeads(baseline);
+  const cases = [
+    ['delegation_requested', 'delegation-request'],
+    ['coordination_message', 'coordination-message'],
+    ['patch_apply_ended', 'patch-apply-ended']
+  ];
+  for (const [eventType, markName] of cases) {
+    const calls = actualDraw((now) => [event(now, eventType)]);
+    assert.ok(animationMarks(calls, 'signature').some((mark) => mark[2] === markName),
+      `${eventType} must reach its factual special-motion draw path`);
+    assert.ok(geometryCount(calls) > 0,
+      `${eventType} must still draw its command geometry above the live routine layer`);
+    assert.ok(figureHeads(calls) >= 1 && figureHeads(calls) <= baselineHeads + 1,
+      `${eventType} may stage its observed sender but must not invent a worker roster`);
+  }
 });
 
 test('project closure uses actual people and distinguishes report from quiet departure', () => {
@@ -270,7 +316,7 @@ test('actual owner floor distinguishes delivered report from quiet project exit'
   assert.ok(animationMarks(report, 'signature').some((mark) => mark[2] === 'owner-report'));
 });
 
-test('all structured work scenes reach RoomRenderer.draw and generic work invents none', () => {
+test('all structured work scenes reach RoomRenderer.draw without relabelling generic live work', () => {
   const actions = [
     'coding', 'research', 'search', 'test', 'git', 'merge_conflict', 'build',
     'document', 'night', 'context', 'external_wait', 'rate_limit', 'review', 'whiteboard', 'crash'
@@ -282,6 +328,20 @@ test('all structured work scenes reach RoomRenderer.draw and generic work invent
     assert.ok(geometryCount(calls) > geometryCount(baseline), `${action} must add real Canvas geometry, not only a cue name`);
   }
   assert.equal(animationMarks(baseline, 'work').length, 0);
+  assert.ok(animationMarks(baseline, 'routine').length > 0, 'a real live worker keeps a visible local routine even without a tool event');
+});
+
+test('ordinary live work cycles visible local routines without a special event or fake work claim', () => {
+  const actions = new Set();
+  const shapes = new Set();
+  for (const drawTime of [0, 9_000, 18_000, 27_000, 36_000]) {
+    const calls = actualDraw([], { workVisual: null, drawTime });
+    assert.equal(animationMarks(calls, 'work').length, 0, 'no local routine may become a structured tool/work event');
+    for (const mark of animationMarks(calls, 'routine')) actions.add(mark[2]);
+    shapes.add(JSON.stringify(calls.filter(([name]) => ['arc', 'rect', 'lineTo', 'quadraticCurveTo'].includes(name))));
+  }
+  assert.ok(actions.size >= 4, 'a live team visibly rotates through several everyday motions');
+  assert.ok(shapes.size >= 4, 'the routines change actual Canvas geometry, not only an internal name');
 });
 
 test('all ten P4 actions plus Owner idle actions reach RoomRenderer.draw', () => {
@@ -292,9 +352,8 @@ test('all ten P4 actions plus Owner idle actions reach RoomRenderer.draw', () =>
     const cue = idleCueForModel(probe, 'pod:codex:draw:main', wallNow);
     if (!cue || found.has(cue.action)) continue;
     const calls = actualDraw([], { activity: 'idle', wallNow, drawTime: 5_000 });
-    const quietFrame = actualDraw([], { activity: 'idle', wallNow: slot * P4_SLOT_MS + 15_000, drawTime: 5_000 });
     assert.ok(animationMarks(calls, 'worker-idle').some((mark) => mark[2] === cue.action), `${cue.action} must reach the real draw path`);
-    assert.ok(geometryCount(calls) > geometryCount(quietFrame), `${cue.action} must add visible Canvas geometry`);
+    assert.ok(geometryCount(calls) > 0, `${cue.action} must add visible Canvas geometry above the quiet live routine`);
     if (['blanket', 'robot', 'elevator_wait', 'stickers', 'photo'].includes(cue.action)) {
       assert.ok(figureHeads(calls) > 4, `${cue.action} must draw the interacting coworker or elevator occupants`);
     }

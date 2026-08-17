@@ -6,6 +6,7 @@
 - 已知 CLI 是否能由 PATH 找到。
 - 受限程序名稱、父子關係與可執行檔位置，用於判斷 App／CLI presence。
 - hook stdin 內少量生命週期欄位，轉成允許清單事件後立即結束。
+- Codex Desktop 當日與前一日、近期修改 session JSONL 的有界尾端／增量位元組；只取 turn 與工具生命週期結構，不取 prompt、回覆、工具 input 或 output。
 - CPU、實體記憶體與電池概況，用於自動降載。
 
 ## 不會保存
@@ -20,7 +21,7 @@
 
 - 程式不呼叫 LLM API，不傳送網路請求，不控制或調整任何 AI 程序優先權。
 - 只把自己的 Neutralino／WebView／偵測程序設為 `BelowNormal`，讓主線工作優先。
-- Owner 已選擇一鍵自動整合；安裝器與第一次啟動只合併允許的生命週期 hook，Codex 平台本身要求的信任仍不會被繞過。
+- 安裝器與第一次啟動會合併所有支援 provider 的允許生命週期 hook，包括 Codex 的官方使用者層設定。Codex 對非 managed command hook 的信任仍由其正常 `/hooks` 審閱流程決定；本程式不使用信任繞過，也不偽裝 managed hook。無法執行 hook 時，Codex 唯讀本機 session 記錄觀察器仍可運作。
 - hook 一律 fail-open：任何解析、寫檔或鎖定錯誤都輸出空 JSON 並以成功碼離開，不阻塞主線 AI。
 - 安裝器只合併本專案 hook；既有設定會先備份。
 

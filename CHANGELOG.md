@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.9 - 2026-08-17
+
+- Codex 正常安裝路徑現在會加入官方使用者層 lifecycle hook，並交由 Codex 的 `/hooks` 正常審閱信任；未信任時仍由唯讀 session observer 接續，不繞過信任或偽裝 managed hook。
+- 明確忽略本機瀏覽器／視覺測試工作區與含固定人偶的透明場景研究稿；runtime 繼續只使用無人物、可讓真實人偶疊加的 scene plate。
+
+## 0.3.8 - 2026-08-17
+
+- Codex Desktop 在不接受或繞過 hook 信任時，可唯讀觀察近期 session 記錄；只保存雜湊識別與結構動作，不讀寫提示詞、回覆或工具內容。
+- 已存在的 session 初次只呈現最後狀態，後續增量才依序動畫；大型 JSONL 維持 bounded tail／offset 讀取。
+- 真實 live 人偶不再因沒有新指令而靜止：工作、等待、閒置、討論與休息會在原座位播放本地日常動作；特殊 A–J 動作結束後回到日常節奏。
+- 封裝不再清除既有 release ZIP、archive 或視覺測試材料；安裝器可明確跳過其他 provider 的 integration 寫入，供唯讀 Codex 驗證使用。
+
 ## 0.3.5 - 2026-08-17
 
 - 依專案人數動態配置第一層與獨立執行層，保留固定 Owner、四方會談室、執行層主管位與休息區。

@@ -68,6 +68,19 @@ function Get-AiOfficeSubagentStopOutcome {
     return ''
 }
 
+function Get-AiOfficeSourceEvidence {
+    param([string]$EventType)
+    switch ($EventType) {
+        'agent_spawned' { return 'hook:subagent_started' }
+        'agent_finished' { return 'hook:subagent_finished' }
+        'agent_failed' { return 'hook:subagent_failed' }
+        'agent_cancelled' { return 'hook:subagent_cancelled' }
+        'task_completed' { return 'hook:task_completed' }
+        'owner_input_required' { return 'hook:owner_input_required' }
+        default { return 'hook:lifecycle' }
+    }
+}
+
 function Add-AiOfficeEventLine {
     param([string]$Path, [string]$Line)
     $encoding = [Text.UTF8Encoding]::new($false)
@@ -201,6 +214,7 @@ try {
         toolName = if ($rawToolName) { $rawToolName.Substring(0, [Math]::Min(30, $rawToolName.Length)) } else { '' }
         observationTier = 'A'
         sourceConfidence = 'structured'
+        sourceEvidence = Get-AiOfficeSourceEvidence $eventType
         important = $eventType -in @('owner_input_required', 'task_completed', 'session_stopped', 'agent_failed')
     }
 

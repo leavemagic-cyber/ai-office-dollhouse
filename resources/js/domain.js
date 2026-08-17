@@ -1,4 +1,5 @@
 import { PEOPLE_PER_ANNEX } from './floor-layout.js';
+import { hasVerifiedEventEvidence } from './event-evidence.js';
 
 export const SCHEMA_VERSION = 1;
 
@@ -33,10 +34,15 @@ const SESSION_EVENTS = new Set([
   'session_started',
   'session_observed',
   'session_title',
+  'task_started',
   'turn_started',
   'turn_completed',
   'owner_input_required',
   'owner_input_received',
+  'delegation_requested',
+  'coordination_message',
+  'task_interrupted',
+  'patch_apply_ended',
   'tool_started',
   'tool_finished',
   'research_started',
@@ -72,6 +78,7 @@ const SESSION_EVENTS = new Set([
 const IMPORTANT_EVENTS = new Set([
   'owner_input_required',
   'task_completed',
+  'task_interrupted',
   'session_stopped',
   'agent_failed',
   'adapter_disconnected',
@@ -182,6 +189,10 @@ function normalizeEvent(raw, now) {
     processState: String(raw?.processState || raw?.process_state || '').toLowerCase(),
     observationTier: String(raw?.observationTier || raw?.observation_tier || 'D').toUpperCase(),
     sourceConfidence: String(raw?.sourceConfidence || raw?.source_confidence || 'unknown'),
+    sourceEvidence: safeLabel(raw?.sourceEvidence || raw?.source_evidence || '', '', 64).toLowerCase(),
+    // Initial bounded-tail observations are permitted to seed state, but must never
+    // revive an old signature animation after the overlay starts.
+    animationEligible: raw?.animationEligible !== false,
     hasInstalled: Object.prototype.hasOwnProperty.call(raw || {}, 'installed'),
     hasAppOpen: Object.prototype.hasOwnProperty.call(raw || {}, 'appOpen') || Object.prototype.hasOwnProperty.call(raw || {}, 'app_open'),
     installed: Boolean(raw?.installed),
@@ -521,6 +532,15 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
     addDiagnostic(state, 'warn', 'event_type_missing', '收到缺少 event_type 的事件', now);
     return { applied: false, reason: 'event_type_missing', event };
   }
+  // Do not let a generic inbox record turn an unproved narrative into a state
+  // transition or a signature scene. This check is universal: it has no provider
+  // branch, and adapters must name the direct structural evidence they observed.
+  if (!hasVerifiedEventEvidence(event)) {
+    state.metrics.rejected += 1;
+    addDiagnostic(state, 'info', 'semantic_evidence_missing', `Ignored unverified ${event.eventType}`, event.timestamp);
+    compactOfficeState(state, now);
+    return { applied: false, reason: 'semantic_evidence_missing', event };
+  }
   if (state.seenEventIds[event.eventId]) {
     state.metrics.duplicates += 1;
     return { applied: false, reason: 'duplicate', event };
@@ -574,6 +594,18 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
       compactOfficeState(state, now);
       return { applied: false, reason: 'session_id_missing', event };
     }
+    // When an actual Codex hook record exists for the same opaque session key,
+    // it is the stronger source. The read-only local transcript observer may
+    // supplement unhooked Desktop sessions, but cannot reset or resurrect a
+    // Tier-A pod with a later-arriving Tier-B seed.
+    if (event.sourceConfidence === 'local_session_record' && Number(pod.lastTierAAt || 0) > 0) {
+      state.metrics.rejected += 1;
+      compactOfficeState(state, now);
+      return { applied: false, reason: 'tier_a_precedence', event };
+    }
+    if (event.observationTier === 'A') {
+      pod.lastTierAAt = Math.max(Number(pod.lastTierAAt) || 0, event.timestamp);
+    }
     if (pod.lifecycle === 'completed'
       && !['session_started', 'session_observed', 'session_title'].includes(event.eventType)) {
       state.metrics.rejected += 1;
@@ -589,6 +621,16 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
         setPodActivity(pod, 'idle');
         pod.idleFrom = 'derived';
         pod.idleSinceAt = event.timestamp;
+        break;
+      case 'task_started':
+        // Codex's own metadata says the task has started. That is enough for a
+        // truthful arrival/work transition, without inspecting the prompt itself.
+        pod.lifecycle = 'active';
+        setPodActivity(pod, 'running');
+        pod.idleFrom = null;
+        pod.idleSinceAt = null;
+        if (main) main.activity = 'working';
+        pod.workVisual = null;
         break;
       case 'session_title':
         pod.label = event.taskLabel;
@@ -617,6 +659,26 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
         setPodActivity(pod, 'running', { resolvesOwnerRequest: true });
         pod.idleFrom = null;
         pod.idleSinceAt = null;
+        break;
+      case 'delegation_requested':
+      case 'coordination_message':
+      case 'patch_apply_ended':
+        // These are literal local record facts (a collaboration dispatch, a
+        // coordination message, or a patch-apply end), not inferred roles,
+        // discussions, approvals, or successful deliveries.
+        setPodActivity(pod, 'running');
+        pod.idleFrom = null;
+        pod.idleSinceAt = null;
+        if (main) main.activity = 'working';
+        break;
+      case 'task_interrupted':
+        // A direct task-level interruption is not evidence that an individual
+        // subagent failed, and must never be rendered as a successful completion.
+        setPodActivity(pod, 'unknown', { resolvesOwnerRequest: true });
+        pod.unknownSinceAt = event.timestamp;
+        pod.lastImportantEvent = 'task_interrupted';
+        pod.workVisual = null;
+        if (main) main.activity = 'unknown';
         break;
       case 'tool_started':
         setPodActivity(pod, 'running');

@@ -1,7 +1,18 @@
 import { floorForEvent, PROVIDER_ROOMS, SHARED_FLOOR_KEY } from './floor-layout.js';
+import { isAnimationEvidenceEligible } from './event-evidence.js';
 
 export const SIGNATURE_EVENTS = Object.freeze({
+  // A task start is an arrival of the observed task, not a claim that a subagent
+  // was spawned. The source-evidence contract is provider-neutral.
+  task_started: { code: 'A', kind: 'arrival', duration: 8_000, priority: 5 },
   agent_spawned: { code: 'A', kind: 'arrival', duration: 8_000, priority: 5 },
+  // A directly observed command deserves a visible intent animation.  The event name
+  // remains literal (requested/sent/applied); the matching B/C/E beat never claims a
+  // persistent agent, meeting, review result, or delivery that was not recorded.
+  delegation_requested: { code: 'B', kind: 'delegation_request', duration: 7_000, priority: 6 },
+  coordination_message: { code: 'C', kind: 'coordination_message', duration: 6_500, priority: 6 },
+  patch_apply_ended: { code: 'E', kind: 'patch_apply_ended', duration: 6_500, priority: 5 },
+  task_interrupted: { code: null, kind: 'error', duration: 10_000, priority: 9 },
   acting_lead_handoff: { code: 'B', kind: 'handoff', duration: 8_000, priority: 7 },
   discussion_started: { code: 'C', kind: 'discussion', duration: 10_000, priority: 6 },
   discussion_ended: { code: null, kind: 'discussion_return', duration: 8_000, priority: 6 },
@@ -14,6 +25,7 @@ export const SIGNATURE_EVENTS = Object.freeze({
   revision_requested: { code: 'E', kind: 'revision', duration: 9_000, priority: 7 },
   review_passed: { code: 'F', kind: 'approved', duration: 8_000, priority: 6 },
   owner_input_required: { code: 'G', kind: 'owner_request', duration: 12_000, priority: 10 },
+  owner_input_received: { code: 'H', kind: 'owner_response', duration: 8_000, priority: 8 },
   delegated_decision_granted: { code: 'H', kind: 'authority', duration: 10_000, priority: 8 },
   multi_delivery: { code: 'I', kind: 'multi_delivery', duration: 8_000, priority: 8 },
   task_completed: { code: 'J', kind: 'final_delivery', duration: 12_000, priority: 9 }
@@ -22,6 +34,7 @@ export const SIGNATURE_EVENTS = Object.freeze({
 function signatureCandidates(model, now) {
   const candidates = [];
   for (const event of model?.recentEvents || []) {
+    if (!isAnimationEvidenceEligible(event)) continue;
     const definition = SIGNATURE_EVENTS[event.eventType];
     if (!definition || now - event.timestamp < -1_000 || now - event.timestamp > 20_000) continue;
     candidates.push({
@@ -32,6 +45,7 @@ function signatureCandidates(model, now) {
     });
   }
   for (const stopped of (model?.recentEvents || []).filter((event) => event.eventType === 'session_stopped')) {
+    if (stopped.animationEligible === false) continue;
     if (now - stopped.timestamp < -1_000 || now - stopped.timestamp > 20_000) continue;
     candidates.push({
       id: `close:${stopped.eventId}`,
@@ -47,7 +61,8 @@ function signatureCandidates(model, now) {
   }
   for (const provider of PROVIDER_ROOMS) {
     const deliveries = (model?.recentEvents || []).filter((event) =>
-      event.provider === provider && event.eventType === 'agent_finished' && now - event.timestamp >= -1_000 && now - event.timestamp < 8_000
+      isAnimationEvidenceEligible(event)
+      && event.provider === provider && event.eventType === 'agent_finished' && now - event.timestamp >= -1_000 && now - event.timestamp < 8_000
     );
     if (deliveries.length < 2) continue;
     const newest = Math.max(...deliveries.map((event) => event.timestamp));
@@ -129,7 +144,7 @@ export function cueAppearsOnFloor(cue, { room, annexIndex = 0 }, model) {
   // physical plate. Owner request/authority/delivery also reach this destination even
   // when their source project is upstairs.
   if (room === 'owner') {
-    return ['owner_request', 'authority', 'final_delivery', 'closing_report', 'discussion', 'discussion_return'].includes(cue.kind)
+    return ['owner_request', 'owner_response', 'authority', 'final_delivery', 'closing_report', 'discussion', 'discussion_return'].includes(cue.kind)
       || floors.some((floor) => floor.room === 'owner');
   }
   // Discussion AIs are an independent runtime participant set and may differ from the
