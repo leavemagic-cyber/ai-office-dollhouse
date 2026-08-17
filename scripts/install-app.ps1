@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $false)][string]$SourceRoot = '',
     [Parameter(Mandatory = $false)][string]$InstallRoot = '',
+    [Parameter(Mandatory = $false)][switch]$SkipIntegrations,
     [Parameter(Mandatory = $false)][switch]$Launch
 )
 
@@ -76,7 +77,22 @@ foreach ($installerName in @('Install-AI-Office-Dollhouse.cmd', 'Install-AI-Offi
 
 $integrationScript = Join-Path $InstallRoot 'scripts\install-integrations.ps1'
 $integration = $null
-if (Test-Path -LiteralPath $integrationScript) {
+if ($SkipIntegrations) {
+    # Package/file verification does not need to alter any provider configuration.
+    # This is especially useful for validating the Codex read-only observer, which
+    # neither needs nor may trigger a Codex hook trust flow.
+    $integration = [pscustomobject]@{
+        ok = $true
+        skipped = $true
+        reason = 'explicit_skip'
+        results = @()
+        codexObserver = [pscustomobject]@{
+            provider = 'codex'
+            mode = 'read_only_session_observer'
+            automaticHookInstallSkipped = $true
+        }
+    }
+} elseif (Test-Path -LiteralPath $integrationScript) {
     # Codex Desktop hook trust is never implied by installing this application.
     # Its read-only session observer works without a hook, so only the providers
     # that have no comparable trust gate are added automatically.

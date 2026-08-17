@@ -5,10 +5,17 @@ import {
   deliveryHomeForCue,
   deliveryPlacementsForCue,
   deliveryReturnFacing,
+  drawLiveRoutineProp,
   drawWorkerIdleProp,
   drawWorkProp,
   idleCueForModel,
   isCueMainPerson,
+  LIVE_DISCUSSION_ROUTINES,
+  LIVE_IDLE_ROUTINES,
+  LIVE_REST_ROUTINES,
+  LIVE_WAITING_ROUTINES,
+  LIVE_WORK_ROUTINES,
+  liveRoutineFor,
   P4_ACTIONS,
   occupantsFromModel,
   P4_SLOT_MS,
@@ -39,9 +46,9 @@ function placement(activity, extra = {}) {
   };
 }
 
-test('generic running stays at its own computer regardless of the render clock', () => {
+test('a live worker stays at its own desk but cycles local routines without a new command', () => {
   const { layout, actor } = placement('working');
-  const poses = [0, 7_200, 12_500, 31_000, 86_400_000].map((time) => poseFor(actor, {
+  const poses = [0, 9_000, 18_000, 27_000, 36_000].map((time) => poseFor(actor, {
     time,
     mode: 'full',
     layout,
@@ -51,18 +58,31 @@ test('generic running stays at its own computer regardless of the render clock',
   for (const pose of poses) {
     assert.equal(pose.gx, actor.gx);
     assert.equal(pose.gy, actor.gy);
-    assert.equal(pose.pose, 'type');
+    assert.equal(pose.workAction, undefined, 'a local routine cannot claim a structured work action');
   }
+  assert.deepEqual(new Set(poses.map((pose) => pose.routineAction)), new Set(LIVE_WORK_ROUTINES));
+  assert.ok(poses.some((pose) => pose.pose === 'type'), 'ordinary keyboard work remains visibly active');
+  assert.ok(poses.some((pose) => pose.pose === 'stand'), 'a brief in-place stretch keeps the live worker from freezing');
 });
 
-test('idle never inherits the old clock-driven manager patrol', () => {
+test('idle stays at its own seat while it cycles quiet local routines outside P4', () => {
   const { layout, actor } = placement('idle');
-  for (const time of [0, 7_200, 12_500, 31_000]) {
-    const pose = poseFor(actor, { time, mode: 'full', layout, room: 'codex', idleCue: null });
+  const poses = [0, 9_000, 18_000, 27_000].map((time) => poseFor(actor, {
+    time, mode: 'full', layout, room: 'codex', idleCue: null
+  }));
+  for (const pose of poses) {
     assert.equal(pose.gx, actor.gx);
     assert.equal(pose.gy, actor.gy);
-    assert.equal(pose.pose, 'sit');
   }
+  assert.deepEqual(new Set(poses.map((pose) => pose.routineAction)), new Set(LIVE_IDLE_ROUTINES));
+  assert.ok(poses.every((pose) => pose.idleAction === undefined), 'P4 remains a separate, event-free optional overlay');
+});
+
+test('daily routines are visual-only and cannot animate a snapshot as a live person', () => {
+  const { actor } = placement('working');
+  assert.equal(liveRoutineFor({ ...actor, person: { ...actor.person, snapshot: true } }, { time: 9_000, mode: 'full' }), null);
+  assert.equal(liveRoutineFor({ ...actor, person: { ...actor.person, activity: 'unknown' } }, { time: 9_000, mode: 'full' }), null);
+  assert.equal(liveRoutineFor(actor, { time: 9_000, mode: 'dnd' }), null);
 });
 
 test('the building-wide idle slot selects only a turn-completed live worker', () => {
@@ -206,7 +226,7 @@ test('P4 props mirror in the same local frame as a left-facing worker', () => {
   assert.deepEqual(transforms, [['translate', 20, 30], ['scale', -1, 1], ['translate', -20, -30]]);
 });
 
-test('the complete design-canon idle and structured-work prop inventories draw without labels', () => {
+test('the complete visual-only routine, idle, and structured-work prop inventories draw without labels', () => {
   assert.deepEqual(P4_ACTIONS, [
     'daze', 'drink', 'read', 'water', 'blanket', 'pet', 'robot',
     'elevator_wait', 'stickers', 'photo'
@@ -226,6 +246,14 @@ test('the complete design-canon idle and structured-work prop inventories draw w
     const ctx = makeContext();
     drawWorkerIdleProp(ctx, 20, 30, { stroke: '#aaa', text: '#aaa' }, action, .5, 1);
     assert.ok(ctx.marks > 0, `${action} must draw an actual prop`);
+  }
+  for (const action of [
+    ...LIVE_WORK_ROUTINES, ...LIVE_WAITING_ROUTINES, ...LIVE_IDLE_ROUTINES,
+    ...LIVE_DISCUSSION_ROUTINES, ...LIVE_REST_ROUTINES
+  ]) {
+    const ctx = makeContext();
+    drawLiveRoutineProp(ctx, 20, 30, { stroke: '#aaa' }, action, .5, 1);
+    assert.ok(ctx.marks > 0, `${action} must draw an actual local routine prop`);
   }
   for (const action of [
     'coding', 'research', 'search', 'test', 'git', 'merge_conflict', 'build',

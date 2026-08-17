@@ -442,11 +442,126 @@ export function completionStage(progress) {
 export const TURN_SETTLE_MS = 1_500;
 export const P4_SLOT_MS = 30_000;
 export const P4_ACTION_MS = 10_000;
+// These are deliberately visual-only routines.  A real lifecycle record decides whether
+// an actor exists and what broad state they are in; the local renderer then keeps that
+// already-real actor from looking frozen between events.  They never write an event,
+// change a pod activity, create another person, or claim that a tool/result happened.
+export const LIVE_ROUTINE_SLOT_MS = 9_000;
+export const LIVE_WORK_ROUTINES = Object.freeze(['keyboard', 'notes', 'inspect', 'organize', 'stretch']);
+export const LIVE_WAITING_ROUTINES = Object.freeze(['wait', 'waiting_notes', 'check']);
+export const LIVE_IDLE_ROUTINES = Object.freeze(['pause', 'read', 'drink', 'stretch']);
+export const LIVE_DISCUSSION_ROUTINES = Object.freeze(['listen', 'gesture', 'notes']);
+export const LIVE_REST_ROUTINES = Object.freeze(['read', 'drink', 'pause']);
 export const P4_ACTIONS = Object.freeze([
   'daze', 'drink', 'read', 'water', 'blanket', 'pet', 'robot',
   'elevator_wait', 'stickers', 'photo'
 ]);
 let p4Schedule = { slot: null, ownerId: null, action: null, cancelled: false };
+
+/**
+ * Return a stable, low-stakes routine for an already-visible live person.  The seed uses
+ * only the existing placement/style, not prompt content or a new inferred task fact.
+ * Full mode changes every nine seconds; low mode is deliberately calmer.  Important and
+ * DND stay quiet, just as they do for the existing P4 choreography.
+ */
+export function liveRoutineFor(placement, options = {}) {
+  const person = placement?.person || {};
+  const mode = options.mode || 'low';
+  if (person.snapshot || person.provider === 'owner' || mode === 'important' || mode === 'dnd') return null;
+  const activity = person.resting ? 'resting' : person.activity;
+  const actions = activity === 'working' || activity === 'running'
+    ? LIVE_WORK_ROUTINES
+    : activity === 'waiting_owner'
+      ? LIVE_WAITING_ROUTINES
+      : activity === 'idle'
+        ? LIVE_IDLE_ROUTINES
+        : activity === 'discussing'
+          ? LIVE_DISCUSSION_ROUTINES
+          : activity === 'resting'
+            ? LIVE_REST_ROUTINES
+            : null;
+  if (!actions) return null;
+  const slotMs = mode === 'full' ? LIVE_ROUTINE_SLOT_MS : LIVE_ROUTINE_SLOT_MS * 2;
+  const time = Math.max(0, Number(options.time) || 0);
+  const slot = Math.floor(time / slotMs);
+  const style = Math.abs(Math.trunc(Number(person.actionStyle) || 0));
+  const order = Math.max(0, Math.trunc(Number(placement?.order) || 0));
+  const index = (slot + style + order * 2) % actions.length;
+  return {
+    action: actions[index],
+    progress: (time % slotMs) / slotMs,
+    startedAt: slot * slotMs,
+    slotMs
+  };
+}
+
+function localRoutinePose(seat, placement, options, fallbackPose = 'sit') {
+  const routine = liveRoutineFor(placement, options);
+  const facing = placement.facing;
+  if (!routine) return { ...seat, pose: fallbackPose, swing: 0, lean: 0, facing, alpha: 1 };
+  const wave = Math.sin(routine.progress * Math.PI * 2);
+  const seated = fallbackPose === 'sit' || fallbackPose === 'type';
+  let pose = fallbackPose;
+  let swing = 0;
+  let lean = 0;
+  switch (routine.action) {
+    case 'keyboard':
+      pose = seated ? 'type' : fallbackPose;
+      swing = wave * .65;
+      break;
+    case 'notes':
+    case 'waiting_notes':
+    case 'read':
+      pose = seated ? 'sit' : fallbackPose;
+      lean = .2 + wave * .1;
+      break;
+    case 'inspect':
+    case 'check':
+      pose = seated ? 'sit' : fallbackPose;
+      lean = .38 + wave * .12;
+      break;
+    case 'organize':
+      pose = seated ? 'sit' : fallbackPose;
+      lean = .12 + wave * .08;
+      break;
+    case 'stretch':
+      pose = 'stand';
+      lean = wave * .24;
+      break;
+    case 'wait':
+      pose = 'raise';
+      break;
+    case 'gesture':
+      pose = 'stand';
+      swing = wave * .34;
+      break;
+    case 'listen':
+      pose = seated ? 'sit' : fallbackPose;
+      lean = .22;
+      break;
+    case 'drink':
+      pose = 'drink';
+      swing = wave * .28;
+      lean = .2;
+      break;
+    case 'pause':
+      pose = seated ? 'sit' : fallbackPose;
+      lean = -.28 + wave * .05;
+      break;
+    default:
+      break;
+  }
+  return {
+    ...seat,
+    pose,
+    swing,
+    lean,
+    facing,
+    alpha: 1,
+    routineAction: routine.action,
+    routineProgress: routine.progress
+  };
+}
 
 /**
  * One deterministic building-wide P4 slot. A slot starts every 30 seconds, which stays
@@ -650,23 +765,13 @@ export function poseFor(placement, options) {
         alpha: 1
       };
     }
-    const restAction = ['read', 'drink', 'daze'][person.actionStyle % 3];
-    return {
-      ...seat,
-      pose: restAction === 'drink' ? 'drink' : 'sit',
-      swing: still ? 0 : Math.sin(time / 850 + person.actionStyle) * .18,
-      lean: restAction === 'daze' ? -.6 : .2,
-      facing: placement.facing,
-      alpha: 1,
-      idleAction: restAction,
-      idleProgress: (time % 4_000) / 4_000
-    };
+    return localRoutinePose(seat, placement, options, 'sit');
   }
 
   // Owner receives requests while seated; the requester is the visitor who raises or
   // knocks. The old branch made Owner raise a hand at their own desk.
   if (activity === 'waiting_owner' && person.provider !== 'owner') {
-    return { ...seat, pose: 'raise', swing: 0, facing: placement.facing, alpha: 1 };
+    return localRoutinePose(seat, placement, options, 'raise');
   }
   if (activity === 'failed') {
     const shake = still ? 0 : Math.sin(time / 90) * .5;
@@ -677,10 +782,11 @@ export function poseFor(placement, options) {
   }
 
   if (activity === 'idle' || placement.role === 'queue') {
-    return workerIdlePose(seat, placement, { ...options, idleCue: still ? null : options.idleCue });
+    if (!still && options.idleCue) return workerIdlePose(seat, placement, options);
+    return localRoutinePose(seat, placement, options, 'sit');
   }
   if (activity === 'discussing') {
-    return { ...seat, pose: 'stand', swing: still ? 0 : Math.sin(time / 520) * .4, facing: placement.facing, alpha: 1 };
+    return localRoutinePose(seat, placement, options, 'stand');
   }
   const seated = placement.desk === true || ['seat', 'desk', 'owner', 'meet'].includes(placement.role);
   const cycle = mode === 'full' ? 2_400 : 4_200;
@@ -692,6 +798,7 @@ export function poseFor(placement, options) {
     const performing = travel.pose === 'stand' && local >= .38 && local < .6;
     return { ...travel, facing: travel.facing || placement.facing, alpha: 1, workAction: performing ? workAction : null, workProgress: local };
   }
+  if (!workAction) return localRoutinePose(seat, placement, options, seated ? 'type' : 'stand');
   return {
     ...seat,
     pose: workAction === 'external_wait'
@@ -757,6 +864,77 @@ function drawOwnerIdleProp(ctx, x, y, theme, action) {
     ctx.arc(x + 8, y - 15, .7, 0, Math.PI * 2);
     ctx.stroke();
   }
+  ctx.restore();
+}
+
+/**
+ * Quiet, generic movement for an actor that is already present because of a live session.
+ * These props deliberately have no task, tool, result, participant, or text semantics:
+ * they are the local rhythm between verified lifecycle events, not inferred events.
+ */
+export function drawLiveRoutineProp(ctx, x, y, theme, action, progress = 0, facing = 1) {
+  if (!action) return;
+  ctx.recordAnimationCue?.('routine', action, { x, y, progress });
+  const p = clamp(progress);
+  const wave = Math.sin(p * Math.PI * 2);
+  ctx.save();
+  ctx.strokeStyle = theme.stroke;
+  ctx.fillStyle = theme.stroke;
+  ctx.lineWidth = .5;
+  ctx.translate(x, y);
+  ctx.scale(facing < 0 ? -1 : 1, 1);
+  ctx.translate(-x, -y);
+  ctx.beginPath();
+  if (action === 'keyboard') {
+    // Four shifting key strokes make ordinary desk work visibly alive without saying
+    // what is being typed or treating it as an observed coding tool call.
+    ctx.rect(x + .8, y - 4.3, 6.8, 1.9);
+    for (let index = 0; index < 4; index += 1) {
+      const lift = index === Math.floor(p * 4) ? -.38 : 0;
+      ctx.moveTo(x + 1.7 + index * 1.35, y - 3.9 + lift);
+      ctx.lineTo(x + 1.7 + index * 1.35, y - 2.9 + lift);
+    }
+  } else if (action === 'notes' || action === 'waiting_notes' || action === 'read') {
+    ctx.moveTo(x + .5, y - 5.5); ctx.lineTo(x + 5.4, y - 5.9); ctx.lineTo(x + 5.2, y - 2.7); ctx.lineTo(x + .4, y - 2.4); ctx.closePath();
+    ctx.moveTo(x + 2.9, y - 5.7); ctx.lineTo(x + 2.7, y - 2.6);
+    if (action !== 'read') {
+      ctx.moveTo(x + 5.7, y - 6.2); ctx.lineTo(x + 7.5 + wave * .4, y - 3.1);
+    }
+  } else if (action === 'inspect' || action === 'check') {
+    ctx.rect(x + .9, y - 11.5, 6.7, 4.8);
+    ctx.arc(x + 8.8 + wave * .25, y - 7.5, 1.65, 0, Math.PI * 2);
+    ctx.moveTo(x + 10, y - 6.3); ctx.lineTo(x + 11.8, y - 4.5);
+  } else if (action === 'organize') {
+    for (let index = 0; index < 3; index += 1) {
+      ctx.rect(x + .5 + index * .65, y - 5.1 - index * .7, 5.2, 2.7);
+    }
+    ctx.moveTo(x + 6.9, y - 5.7); ctx.lineTo(x + 8.1, y - 3.1 + wave * .25);
+  } else if (action === 'stretch') {
+    // Two small arcs sit above the real actor's shoulders.  They read as a stretch,
+    // not a new person or an Owner request.
+    ctx.arc(x - .2, y - 10.6, 3.1, -2.55, -.55);
+    ctx.arc(x + 5.8, y - 10.6, 3.1, -2.6, -.58);
+  } else if (action === 'wait') {
+    ctx.rect(x + 1.1, y - 6.1, 4.8, 3.1);
+    ctx.moveTo(x + 2, y - 5.1); ctx.lineTo(x + 4.6, y - 5.1);
+  } else if (action === 'listen') {
+    ctx.arc(x + 4.5, y - 10.1, 2.15, -1.25, 1.2);
+    ctx.arc(x + 4.5, y - 10.1, 3.05, -1.15, 1.1);
+  } else if (action === 'gesture') {
+    ctx.moveTo(x + 2.1, y - 8.2); ctx.quadraticCurveTo(x + 5.3, y - 12.1 + wave, x + 8.4, y - 8.0);
+    ctx.moveTo(x + 5.2, y - 11.1 + wave); ctx.lineTo(x + 6.4, y - 13.1 + wave);
+  } else if (action === 'drink') {
+    const lift = .5 + Math.sin(p * Math.PI) * 1.15;
+    ctx.rect(x + 2.6, y - 9.2 - lift, 2.2, 2.4);
+    ctx.arc(x + 5.1, y - 8 - lift, .9, -Math.PI / 2, Math.PI / 2);
+  } else if (action === 'pause') {
+    // A small desk-side breathing line, never a thought bubble or hidden content.
+    for (const offset of [0, 1.8, 3.6]) {
+      ctx.moveTo(x + .7 + offset, y - 7.2 - Math.abs(wave) * .25);
+      ctx.quadraticCurveTo(x + 1.3 + offset, y - 8.1, x + 1.9 + offset, y - 7.2 - Math.abs(wave) * .25);
+    }
+  }
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -1047,6 +1225,29 @@ function drawAuthorityHandoff(ctx, room, project, theme, cue, time, layout) {
   void time;
 }
 
+// A same-session Owner reply is a real observed action, but is not automatically an
+// authority grant.  Show the reply card travelling to the known live worker without
+// introducing an unobserved recipient or a second Owner.
+function drawOwnerResponse(ctx, room, project, theme, cue, time, layout) {
+  ctx.recordAnimationCue?.('signature', 'owner-response', { room, progress: cue.progress });
+  const progress = ease(clamp(cue.progress));
+  const ownerDesk = cuePoint(project, layout?.manager, { gx: 2.35, gy: 8.1 });
+  const workerSeat = cuePoint(project, cueSeatPoints(layout)[0], { gx: 5.6, gy: 5.7 });
+  const source = room === 'owner' ? ownerDesk : cuePoint(project, layout?.walkway, { gx: 5.5, gy: 9.2 });
+  const target = room === 'owner' ? cuePoint(project, layout?.walkway, { gx: 5.5, gy: 9.2 }) : workerSeat;
+  const cardX = source[0] + (target[0] - source[0]) * progress;
+  const cardY = source[1] + (target[1] - source[1]) * progress - 7;
+  if (room !== 'owner') {
+    drawFigure(ctx, target[0], target[1], theme, {
+      pose: progress > .78 ? 'stand' : 'sit',
+      facing: -1,
+      identity: IDENTITY[cue.event.provider]
+    });
+  }
+  drawFolder(ctx, cardX, cardY, theme, null, { stamp: true });
+  void time;
+}
+
 /**
  * Signature J, Owner side: finished work is reported in person. The courier comes in from
  * the walkway, stands at the Owner's desk long enough to hand the delivery over, then
@@ -1201,9 +1402,8 @@ function drawArrival(ctx, project, theme, cue, time, layout) {
   if (progress >= .72) drawFolder(ctx, manager[0] + 4, manager[1] - 8, theme);
 }
 
-// A direct collaboration dispatch is not evidence that a new worker has arrived.
-// Keep this cue object-only: a real person appears only when an independently
-// observed task/session creates one in the model.
+// A direct collaboration dispatch is a real command.  It animates the known live
+// sender placing a packet into the dispatch route, but never creates a recipient.
 function drawDelegationRequest(ctx, project, theme, cue, time, layout) {
   const progress = ease(clamp(cue.progress));
   const manager = cuePoint(project, layout?.manager, { gx: 2.35, gy: 8.1 });
@@ -1212,6 +1412,13 @@ function drawDelegationRequest(ctx, project, theme, cue, time, layout) {
   const x = manager[0] + (door[0] - manager[0]) * local;
   const y = manager[1] + (door[1] - manager[1]) * local - Math.sin(local * Math.PI) * 7;
   ctx.recordAnimationCue?.('signature', 'delegation-request', { progress: cue.progress });
+  const workerLocal = ease(clamp((progress - .02) / .78));
+  drawFigure(ctx,
+    manager[0] + (door[0] - manager[0]) * workerLocal * .34,
+    manager[1] + (door[1] - manager[1]) * workerLocal * .34,
+    theme,
+    { pose: workerLocal < .86 ? 'walk' : 'stand', carry: true, swing: Math.sin(time / 120) * .45, facing: 1, identity: IDENTITY[cue.event.provider] }
+  );
   drawFolder(ctx, x, y, theme, null, { toolbox: true });
   ctx.save();
   ctx.strokeStyle = theme.soft;
@@ -1225,8 +1432,8 @@ function drawDelegationRequest(ctx, project, theme, cue, time, layout) {
   ctx.restore();
 }
 
-// A sent collaboration message is visible as a physical dispatch, but never
-// impersonates a meeting or invents participants that were not observed.
+// A sent collaboration message is a real communication action.  Its sender can make
+// the C beat, while the receiver/meeting roster remains deliberately absent.
 function drawCoordinationMessage(ctx, project, theme, cue, time, layout) {
   const progress = ease(clamp(cue.progress));
   const manager = cuePoint(project, layout?.manager, { gx: 2.35, gy: 8.1 });
@@ -1236,6 +1443,10 @@ function drawCoordinationMessage(ctx, project, theme, cue, time, layout) {
   const x = manager[0] + (target[0] - manager[0]) * local;
   const y = manager[1] + (target[1] - manager[1]) * local - Math.sin(local * Math.PI) * 5;
   ctx.recordAnimationCue?.('signature', 'coordination-message', { progress: cue.progress });
+  drawFigure(ctx, manager[0], manager[1], theme, {
+    pose: progress < .7 ? 'stand' : 'sit', carry: progress < .62,
+    lean: Math.sin(time / 180) * .15, facing: 1, identity: IDENTITY[cue.event.provider]
+  });
   ctx.save();
   ctx.strokeStyle = theme.soft;
   ctx.lineWidth = .45;
@@ -1248,8 +1459,8 @@ function drawCoordinationMessage(ctx, project, theme, cue, time, layout) {
   drawFolder(ctx, x, y, theme);
 }
 
-// patch_apply_end is only an observed end marker. Draw the physical patch packet
-// settling at the desk; do not call it a review pass or a successful delivery.
+// patch_apply_end is a real revision action.  It earns the E beat, while still not
+// claiming an external review request, pass, or delivery.
 function drawPatchApplyEnded(ctx, project, theme, cue, time, layout) {
   const progress = ease(clamp(cue.progress));
   const manager = cuePoint(project, layout?.manager, { gx: 2.35, gy: 8.1 });
@@ -1257,6 +1468,10 @@ function drawPatchApplyEnded(ctx, project, theme, cue, time, layout) {
   const x = manager[0] + 4.2;
   const y = manager[1] - 18 + 10 * drop;
   ctx.recordAnimationCue?.('signature', 'patch-apply-ended', { progress: cue.progress });
+  drawFigure(ctx, manager[0] - 1.5, manager[1] + 1.8, theme, {
+    pose: progress < .72 ? 'sit' : 'stand', carry: progress < .58,
+    lean: Math.sin(time / 150) * .12, facing: 1, identity: IDENTITY[cue.event.provider]
+  });
   drawFolder(ctx, x, y, theme, null, { toolbox: true });
   ctx.save();
   ctx.strokeStyle = theme.soft;
@@ -1280,7 +1495,10 @@ function drawLeadHandoff(ctx, project, theme, cue, time, layout) {
   const a = [manager[0] + (other[0] - manager[0]) * .38, manager[1] + (other[1] - manager[1]) * .38];
   const b = [manager[0] + (other[0] - manager[0]) * .68, manager[1] + (other[1] - manager[1]) * .68];
   drawFigure(ctx, a[0], a[1], theme, { pose: 'stand', facing: 1, lean: Math.sin(time / 260) * .2, identity: IDENTITY[cue.event.provider] });
-  drawFigure(ctx, b[0], b[1], theme, { pose: 'stand', facing: -1, lean: -Math.sin(time / 260) * .2, identity: IDENTITY[cue.event.targetProvider || cue.event.provider] });
+  const hasObservedRecipient = Boolean(cue.event.targetProvider && cue.event.targetProvider !== 'other');
+  if (hasObservedRecipient) {
+    drawFigure(ctx, b[0], b[1], theme, { pose: 'stand', facing: -1, lean: -Math.sin(time / 260) * .2, identity: IDENTITY[cue.event.targetProvider] });
+  }
   const pass = progress < .7 ? ease(progress / .7) : 1;
   drawFolder(ctx, a[0] + (b[0] - a[0]) * pass, a[1] + (b[1] - a[1]) * pass - 8, theme);
   const lightX = a[0] + (b[0] - a[0]) * pass;
@@ -1289,9 +1507,12 @@ function drawLeadHandoff(ctx, project, theme, cue, time, layout) {
 }
 
 function drawDiscussionTravel(ctx, project, theme, cue, time, layout, returning = false) {
-  const participants = Array.isArray(cue.event.participantProviders)
+  const recordedParticipants = Array.isArray(cue.event.participantProviders)
     ? orderedDiscussionProviders(cue.event.participantProviders, cue.event.chairProvider)
     : [];
+  // The command issuer is a real, known participant when a direct
+  // `discussion_started` command has no retained roster.  Do not add anyone else.
+  const participants = recordedParticipants.length ? recordedParticipants : [cue.event.provider].filter((provider) => IDENTITY[provider]);
   const seats = (layout?.seats || []).filter((seat) => seat.role === 'meeting').slice(0, participants.length);
   if (!seats.length) return;
   const door = layout?.walkway || { gx: 5.55, gy: 9.15 };
@@ -1484,6 +1705,9 @@ function drawSignatureCue(ctx, room, cue, theme, project, height, time, layout, 
   } else if (cue.kind === 'owner_request') {
     drawOwnerRequest(ctx, room, project, theme, cue, time);
     badge(theme.waiting);
+  } else if (cue.kind === 'owner_response') {
+    drawOwnerResponse(ctx, room, project, theme, cue, time, layout);
+    badge(theme.working);
   } else if (cue.kind === 'revision' || cue.kind === 'approved') {
     drawReviewBeat(ctx, project, theme, cue, time, layout, cue.kind === 'approved');
     badge(cue.kind === 'revision' ? theme.waiting : theme.working);
@@ -1725,7 +1949,7 @@ export class RoomRenderer {
     const workingSpots = [];
 
     if (phase.figures > 0) {
-      const theatricalKinds = new Set(['arrival', 'handoff', 'discussion', 'discussion_return', 'error', 'revision', 'approved', 'owner_request', 'authority', 'multi_delivery', 'cancelled', 'closing_report', 'closing_departure']);
+      const theatricalKinds = new Set(['arrival', 'delegation_request', 'coordination_message', 'patch_apply_ended', 'handoff', 'discussion', 'discussion_return', 'error', 'revision', 'approved', 'owner_request', 'owner_response', 'authority', 'multi_delivery', 'cancelled', 'closing_report', 'closing_departure']);
       const cueSession = String(cue?.event?.sessionId || '');
       const stagedOccupants = cueOnThisFloor && theatricalKinds.has(cue?.kind)
         ? occupants.filter((person) => {
@@ -1801,6 +2025,7 @@ export class RoomRenderer {
             if (person.provider === 'owner') drawOwnerIdleProp(ctx, x, y, theme, actor.pose.ownerAction);
             else {
               drawWorkProp(ctx, x, y, theme, actor.pose.workAction, actor.pose.workProgress, actor.pose.facing);
+              drawLiveRoutineProp(ctx, x, y, theme, actor.pose.routineAction, actor.pose.routineProgress, actor.pose.facing);
               drawWorkerIdleProp(ctx, x, y, theme, actor.pose.idleAction, actor.pose.idleProgress, actor.pose.facing);
             }
             ctx.setLineDash([]);

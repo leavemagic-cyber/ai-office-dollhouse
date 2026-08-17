@@ -169,20 +169,43 @@ function toolName(value) {
 }
 
 // These names are direct structural facts: the observer never reads a tool's input
-// or output to decide what work it represents. The emitted events intentionally say
-// "requested" or "sent" rather than claiming that a new agent or discussion exists.
+// or output to decide what work it represents.  A command that explicitly names its
+// action may animate that action, but a generic command is never upgraded into a
+// result that it did not name.
 const DIRECT_TOOL_EVENTS = new Map([
   ['collaboration.spawn_agent', 'delegation_requested'],
   ['collaboration.followup_task', 'delegation_requested'],
-  ['collaboration.send_message', 'coordination_message']
+  ['collaboration.send_message', 'coordination_message'],
+  ['spawn_agent', 'delegation_requested'],
+  ['followup_task', 'delegation_requested'],
+  ['send_message', 'coordination_message'],
+  ['acting_lead_handoff', 'acting_lead_handoff'],
+  ['lead_handoff', 'acting_lead_handoff'],
+  ['discussion_started', 'discussion_started'],
+  ['start_discussion', 'discussion_started'],
+  ['meeting_started', 'meeting_started'],
+  ['start_meeting', 'meeting_started'],
+  ['revision_requested', 'revision_requested'],
+  ['request_revision', 'revision_requested'],
+  ['review_passed', 'review_passed'],
+  ['review_approved', 'review_passed'],
+  ['approve_review', 'review_passed'],
+  ['delegated_decision_granted', 'delegated_decision_granted'],
+  ['delegated_authority_granted', 'delegated_decision_granted'],
+  ['authority_granted', 'delegated_decision_granted'],
+  ['decision_recorded', 'decision_recorded']
 ]);
 
 function directToolEvent(name) {
   const normalized = toolName(name).toLowerCase();
-  if (normalized === 'functions.request_user_input' || normalized === 'request_user_input') {
+  const aliases = [normalized];
+  for (const prefix of ['functions.', 'collaboration.']) {
+    if (normalized.startsWith(prefix)) aliases.push(normalized.slice(prefix.length));
+  }
+  if (aliases.includes('request_user_input')) {
     return 'owner_input_required';
   }
-  return DIRECT_TOOL_EVENTS.get(normalized) || '';
+  return aliases.map((alias) => DIRECT_TOOL_EVENTS.get(alias)).find(Boolean) || '';
 }
 
 function directMessageEvent(row, payloadType, ownerInputPending) {
@@ -207,7 +230,16 @@ function sourceEvidenceFor(eventType) {
     owner_input_received: 'session:owner_input_received',
     delegation_requested: 'session:delegation_requested',
     coordination_message: 'session:coordination_message',
-    patch_apply_ended: 'session:patch_apply_ended'
+    patch_apply_ended: 'session:patch_apply_ended',
+    acting_lead_handoff: 'session:acting_lead_handoff',
+    discussion_started: 'session:discussion_started',
+    discussion_ended: 'session:discussion_ended',
+    meeting_started: 'session:meeting_started',
+    meeting_completed: 'session:meeting_completed',
+    revision_requested: 'session:revision_requested',
+    review_passed: 'session:review_passed',
+    delegated_decision_granted: 'session:delegated_decision_granted',
+    decision_recorded: 'session:decision_recorded'
   };
   return direct[eventType] || 'session:lifecycle';
 }

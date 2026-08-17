@@ -28,7 +28,11 @@ function Get-Sha256([string]$Path) {
 }
 
 function Remove-ProjectGeneratedDirectory([string]$Name) {
-    $allowed = @('.tmp', '.visual-test', 'bin', 'dist', 'release')
+    # A local package build may safely recreate compiler outputs, but it must never
+    # erase prior release ZIPs, archives, or an operator's visual-test material.
+    # The current package root and ZIP are replaced explicitly below after their paths
+    # have been resolved and checked.
+    $allowed = @('.tmp', 'bin', 'dist')
     if ($Name -notin $allowed) { throw "Generated directory is not allowlisted: $Name" }
     $target = [IO.Path]::GetFullPath((Join-Path $projectRoot $Name))
     if (-not $target.StartsWith($projectRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -140,7 +144,7 @@ if (-not $packageRoot.StartsWith($releaseRoot + [IO.Path]::DirectorySeparatorCha
     throw 'Refusing to package outside the project release directory.'
 }
 
-foreach ($generatedDirectory in @('.tmp', '.visual-test', 'bin', 'dist', 'release')) {
+foreach ($generatedDirectory in @('.tmp', 'bin', 'dist')) {
     Remove-ProjectGeneratedDirectory $generatedDirectory
 }
 
