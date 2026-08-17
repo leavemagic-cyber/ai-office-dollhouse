@@ -177,6 +177,29 @@ internal static class AIOfficeHookRelay
         return string.Empty;
     }
 
+    // A UserPromptSubmit/BeforeAgent payload may contain the user's instruction. We
+    // inspect at most a short prefix in memory and emit only an opaque action type.
+    // The prompt itself is never hashed into an ID, serialized, logged, or returned.
+    // These are requests, not claimed outcomes: no phrase can manufacture a review
+    // pass, delegated authority, agent spawn, or task delivery.
+    private static List<string> PromptIntentEvents(string hook, Dictionary<string, object> payload)
+    {
+        List<string> intents = new List<string>();
+        if (hook != "userpromptsubmit" && hook != "beforeagent") return intents;
+        string prompt = TextValue(payload, "prompt", "user_prompt", "userPrompt");
+        if (string.IsNullOrWhiteSpace(prompt)) return intents;
+        if (prompt.Length > 4096) prompt = prompt.Substring(0, 4096);
+
+        RegexOptions options = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+        if (Regex.IsMatch(prompt, @"\bhandoff\b|\bhand\s+over\b|交接|轉交|接手", options)) intents.Add("handoff_requested");
+        if (Regex.IsMatch(prompt, @"\bdelegat(?:e|ion)\b|\bassign(?:ment)?\b|\bsubagent\b|委派|分派|派給|交給", options)) intents.Add("delegation_requested");
+        if (Regex.IsMatch(prompt, @"\bdiscuss(?:ion)?\b|\bcoordinate\b|\bconsult\b|討論|協調|會商", options)) intents.Add("coordination_message");
+        if (Regex.IsMatch(prompt, @"\brevis(?:e|ion)\b|\bamend\b|\bfix\b|修改|修正|退修", options)) intents.Add("revision_requested");
+        if (Regex.IsMatch(prompt, @"\breview\b|\baudit\b|\binspect\b|審查|覆核", options)) intents.Add("review_requested");
+        if (Regex.IsMatch(prompt, @"\bask\s+(?:the\s+)?owner\b|\bowner\s+(?:input|decision|approval)\b|請示|請.*(?:核准|批准)|需要.*(?:核准|批准)", options)) intents.Add("owner_consult_requested");
+        return intents;
+    }
+
     private static string MapEvent(string provider, string hook, Dictionary<string, object> payload)
     {
         switch (hook)
@@ -305,6 +328,18 @@ internal static class AIOfficeHookRelay
         officeEvent["sourceEvidence"] = SourceEvidence(eventType);
         officeEvent["important"] = eventType == "owner_input_required" || eventType == "task_completed" || eventType == "session_stopped" || eventType == "agent_failed";
 
+        List<Dictionary<string, object>> officeEvents = new List<Dictionary<string, object>>();
+        officeEvents.Add(officeEvent);
+        foreach (string intentEventType in PromptIntentEvents(hook, payload))
+        {
+            Dictionary<string, object> intentEvent = new Dictionary<string, object>(officeEvent);
+            intentEvent["eventId"] = Hash(string.Join("|", provider, rawSession, hook, rawAgent, rawTurn, rawTool, timestamp.ToString(CultureInfo.InvariantCulture), "intent", intentEventType), 32);
+            intentEvent["eventType"] = intentEventType;
+            intentEvent["sourceEvidence"] = "hook:intent:" + intentEventType;
+            intentEvent["important"] = false;
+            officeEvents.Add(intentEvent);
+        }
+
         string dataDirectory = Environment.GetEnvironmentVariable("AI_OFFICE_DATA_DIR");
         if (string.IsNullOrWhiteSpace(dataDirectory)) dataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AIOfficeDollhouse");
         Directory.CreateDirectory(dataDirectory);
@@ -315,8 +350,6 @@ internal static class AIOfficeHookRelay
             if (File.Exists(archivePath)) File.Delete(archivePath);
             File.Move(eventPath, archivePath);
         }
-        string serialized = serializer.Serialize(officeEvent);
-        AppendWithRetry(eventPath, serialized);
         // A bounded live inbox keeps desktop polling independent from the full audit
         // ledger. Preserve one prior segment so a session start survives rotation.
         string livePath = Path.Combine(dataDirectory, "live-events.ndjson");
@@ -326,7 +359,12 @@ internal static class AIOfficeHookRelay
             if (File.Exists(liveArchive)) File.Delete(liveArchive);
             File.Move(livePath, liveArchive);
         }
-        AppendWithRetry(livePath, serialized);
+        foreach (Dictionary<string, object> storedEvent in officeEvents)
+        {
+            string serialized = serializer.Serialize(storedEvent);
+            AppendWithRetry(eventPath, serialized);
+            AppendWithRetry(livePath, serialized);
+        }
     }
 
     public static int Main(string[] args)

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.10 - 2026-08-17
+
+- 已信任的 provider lifecycle hook 現在可在記憶體把明示的交接、委派、討論、退修、審查與 Owner 請示映射為跨 Provider 的 B／C／E／F／G request 動畫；不保存 prompt，也不把 request 冒充成新 agent、審查通過、授權或交件。
+- 只有真正的 permission／elicitation 會建立 Owner 等待狀態；只有直接可驗證的結果事件才會播放審查通過、授權或交件。
+
 ## 0.3.9 - 2026-08-17
 
 - Codex 正常安裝路徑現在會加入官方使用者層 lifecycle hook，並交由 Codex 的 `/hooks` 正常審閱信任；未信任時仍由唯讀 session observer 接續，不繞過信任或偽裝 managed hook。

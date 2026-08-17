@@ -335,6 +335,79 @@ test('compiled hook relay is private, fail-open, and provider-aware', { skip: pr
   assert.equal(event.sourceEvidence, 'hook:lifecycle');
 });
 
+test('hook relays classify explicit user requests without storing prompt content or claiming outcomes', { skip: process.platform !== 'win32' }, () => {
+  const relay = join(root, 'scripts', 'relay', 'AIOfficeHookRelay.exe');
+  const rawPrompt = '請交接並委派 subagent 與 Claude 討論；修正後審查，必要時向 Owner 請示核准。';
+  const alternatePrompt = '請把這個不應落盤的另一份內容交接、委派並討論；請退修後覆核，並請示 Owner 核准。';
+  const expected = [
+    'turn_started', 'handoff_requested', 'delegation_requested', 'coordination_message',
+    'revision_requested', 'review_requested', 'owner_consult_requested'
+  ];
+  const runners = [
+    {
+      name: 'PowerShell fallback',
+      run(input, dataDirectory) {
+        return runScript('hook-relay.ps1', ['-Provider', 'claude', '-SurfaceKind', 'auto'], {
+          input,
+          env: { ...process.env, AI_OFFICE_DATA_DIR: dataDirectory }
+        });
+      }
+    },
+    {
+      name: 'compiled relay',
+      run(input, dataDirectory) {
+        return spawnSync(relay, ['grok', 'auto'], {
+          cwd: root,
+          encoding: 'utf8',
+          input,
+          env: { ...process.env, AI_OFFICE_DATA_DIR: dataDirectory }
+        });
+      }
+    }
+  ];
+
+  for (const runner of runners) {
+    const dataDirectory = mkdtempSync(join(tmpdir(), 'ai-office-hook-intent-'));
+    const result = runner.run(JSON.stringify({
+      session_id: `${runner.name}-secret-session`,
+      hook_event_name: 'UserPromptSubmit',
+      cwd: 'C:\\Work\\Intent Test',
+      prompt: rawPrompt,
+      timestamp: '2026-08-17T05:00:00Z'
+    }), dataDirectory);
+    assert.equal(result.status, 0, `${runner.name}: ${result.stderr}`);
+    assert.equal(result.stdout, '{}', runner.name);
+    const stored = readFileSync(join(dataDirectory, 'events.ndjson'), 'utf8');
+    assert.equal(readFileSync(join(dataDirectory, 'live-events.ndjson'), 'utf8'), stored);
+    assert.equal(stored.includes(rawPrompt), false, `${runner.name}: prompt must not persist`);
+    assert.equal(stored.includes('secret-session'), false, `${runner.name}: raw session ID must not persist`);
+    const events = stored.trim().split(/\r?\n/).map(JSON.parse);
+    assert.deepEqual(events.map((event) => event.eventType), expected, runner.name);
+    assert.deepEqual(events.map((event) => event.sourceEvidence), [
+      'hook:lifecycle',
+      ...expected.slice(1).map((eventType) => `hook:intent:${eventType}`)
+    ], runner.name);
+    assert.ok(events.every((event) => event.observationTier === 'A' && event.sourceConfidence === 'structured'));
+    assert.equal(events.some((event) => ['agent_spawned', 'review_passed', 'task_completed', 'delegated_decision_granted'].includes(event.eventType)), false,
+      `${runner.name}: a request must not be promoted into an outcome`);
+
+    const alternateDirectory = mkdtempSync(join(tmpdir(), 'ai-office-hook-intent-alternate-'));
+    const alternateResult = runner.run(JSON.stringify({
+      session_id: `${runner.name}-secret-session`,
+      hook_event_name: 'UserPromptSubmit',
+      cwd: 'C:\\Work\\Intent Test',
+      prompt: alternatePrompt,
+      timestamp: '2026-08-17T05:00:00Z'
+    }), alternateDirectory);
+    assert.equal(alternateResult.status, 0, `${runner.name}: alternate prompt relay failed`);
+    const alternateStored = readFileSync(join(alternateDirectory, 'events.ndjson'), 'utf8');
+    assert.equal(alternateStored.includes(alternatePrompt), false, `${runner.name}: alternate prompt must not persist`);
+    const alternateEvents = alternateStored.trim().split(/\r?\n/).map(JSON.parse);
+    assert.deepEqual(alternateEvents.map((event) => event.eventId), events.map((event) => event.eventId),
+      `${runner.name}: raw prompt must not influence opaque event IDs`);
+  }
+});
+
 test('compiled hook relay exits after one JSON line even when stdin stays open', { skip: process.platform !== 'win32' }, async () => {
   const dataDirectory = mkdtempSync(join(tmpdir(), 'ai-office-open-stdin-'));
   const relay = join(root, 'scripts', 'relay', 'AIOfficeHookRelay.exe');

@@ -68,6 +68,25 @@ function Get-AiOfficeSubagentStopOutcome {
     return ''
 }
 
+function Get-AiOfficePromptIntentEvents {
+    param([string]$HookKey, $Payload)
+    # Inspect only a short in-memory prefix of a user instruction. Persisting the
+    # instruction, hashing it into an ID, or inferring an outcome from it is forbidden.
+    # These event types mean a request was made, never that the requested work succeeded.
+    if ($HookKey -notin @('userpromptsubmit', 'beforeagent')) { return @() }
+    $prompt = [string](Get-AiOfficeValue $Payload @('prompt', 'user_prompt', 'userPrompt'))
+    if ([string]::IsNullOrWhiteSpace($prompt)) { return @() }
+    if ($prompt.Length -gt 4096) { $prompt = $prompt.Substring(0, 4096) }
+    $intents = [System.Collections.Generic.List[string]]::new()
+    if ($prompt -match '\bhandoff\b|\bhand\s+over\b|\u4ea4\u63a5|\u8f49\u4ea4|\u63a5\u624b') { [void]$intents.Add('handoff_requested') }
+    if ($prompt -match '\bdelegat(?:e|ion)\b|\bassign(?:ment)?\b|\bsubagent\b|\u59d4\u6d3e|\u5206\u6d3e|\u6d3e\u7d66|\u4ea4\u7d66') { [void]$intents.Add('delegation_requested') }
+    if ($prompt -match '\bdiscuss(?:ion)?\b|\bcoordinate\b|\bconsult\b|\u8a0e\u8ad6|\u5354\u8abf|\u6703\u5546') { [void]$intents.Add('coordination_message') }
+    if ($prompt -match '\brevis(?:e|ion)\b|\bamend\b|\bfix\b|\u4fee\u6539|\u4fee\u6b63|\u9000\u4fee') { [void]$intents.Add('revision_requested') }
+    if ($prompt -match '\breview\b|\baudit\b|\binspect\b|\u5be9\u67e5|\u8986\u6838') { [void]$intents.Add('review_requested') }
+    if ($prompt -match '\bask\s+(?:the\s+)?owner\b|\bowner\s+(?:input|decision|approval)\b|\u8acb\u793a|\u8acb.*(?:\u6838\u51c6|\u6279\u51c6)|\u9700\u8981.*(?:\u6838\u51c6|\u6279\u51c6)') { [void]$intents.Add('owner_consult_requested') }
+    return $intents.ToArray()
+}
+
 function Get-AiOfficeSourceEvidence {
     param([string]$EventType)
     switch ($EventType) {
@@ -217,6 +236,16 @@ try {
         sourceEvidence = Get-AiOfficeSourceEvidence $eventType
         important = $eventType -in @('owner_input_required', 'task_completed', 'session_stopped', 'agent_failed')
     }
+    $officeEvents = @($officeEvent)
+    foreach ($intentEventType in @(Get-AiOfficePromptIntentEvents $hookKey $payload)) {
+        $intentEvent = [ordered]@{}
+        foreach ($entry in $officeEvent.GetEnumerator()) { $intentEvent[$entry.Key] = $entry.Value }
+        $intentEvent.eventId = Get-AiOfficeHash "$Provider|$rawSessionId|$hookKey|$rawAgentId|$rawTurnId|$rawToolName|$timestamp|intent|$intentEventType" 32
+        $intentEvent.eventType = $intentEventType
+        $intentEvent.sourceEvidence = "hook:intent:$intentEventType"
+        $intentEvent.important = $false
+        $officeEvents += $intentEvent
+    }
 
     $dataDirectory = if (-not [string]::IsNullOrWhiteSpace($env:AI_OFFICE_DATA_DIR)) {
         $env:AI_OFFICE_DATA_DIR
@@ -232,8 +261,6 @@ try {
         $archivePath = Join-Path $dataDirectory 'events.1.ndjson'
         Move-Item -LiteralPath $eventPath -Destination $archivePath -Force
     }
-    $line = ($officeEvent | ConvertTo-Json -Compress -Depth 8) + [Environment]::NewLine
-    [void](Add-AiOfficeEventLine $eventPath $line)
     # Keep a small display inbox beside the append-only audit ledger. The desktop can
     # read this bounded file every 1.5 seconds without replaying a multi-megabyte history.
     $livePath = Join-Path $dataDirectory 'live-events.ndjson'
@@ -241,7 +268,11 @@ try {
         $liveArchive = Join-Path $dataDirectory 'live-events.1.ndjson'
         Move-Item -LiteralPath $livePath -Destination $liveArchive -Force
     }
-    [void](Add-AiOfficeEventLine $livePath $line)
+    foreach ($storedEvent in $officeEvents) {
+        $line = ($storedEvent | ConvertTo-Json -Compress -Depth 8) + [Environment]::NewLine
+        [void](Add-AiOfficeEventLine $eventPath $line)
+        [void](Add-AiOfficeEventLine $livePath $line)
+    }
 }
 catch {
     # Hooks must always fail open and must never expose raw payloads in stderr.

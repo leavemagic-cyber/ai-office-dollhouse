@@ -39,8 +39,10 @@ const SESSION_EVENTS = new Set([
   'turn_completed',
   'owner_input_required',
   'owner_input_received',
+  'owner_consult_requested',
   'delegation_requested',
   'coordination_message',
+  'handoff_requested',
   'task_interrupted',
   'patch_apply_ended',
   'tool_started',
@@ -70,6 +72,7 @@ const SESSION_EVENTS = new Set([
   'discussion_started',
   'discussion_ended',
   'revision_requested',
+  'review_requested',
   'review_passed',
   'delegated_decision_granted',
   'decision_recorded'
@@ -666,6 +669,17 @@ export function applyOfficeEvent(state, rawEvent, now = Date.now()) {
         // These are literal local record facts (a collaboration dispatch, a
         // coordination message, or a patch-apply end), not inferred roles,
         // discussions, approvals, or successful deliveries.
+        setPodActivity(pod, 'running');
+        pod.idleFrom = null;
+        pod.idleSinceAt = null;
+        if (main) main.activity = 'working';
+        break;
+      case 'handoff_requested':
+      case 'review_requested':
+      case 'owner_consult_requested':
+        // A hook-derived instruction proves that a request was made, not that a
+        // lead changed, a review passed, or the Owner has granted anything. Keep
+        // the real worker active without manufacturing any outcome state.
         setPodActivity(pod, 'running');
         pod.idleFrom = null;
         pod.idleSinceAt = null;

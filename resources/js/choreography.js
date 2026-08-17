@@ -12,6 +12,11 @@ export const SIGNATURE_EVENTS = Object.freeze({
   delegation_requested: { code: 'B', kind: 'delegation_request', duration: 7_000, priority: 6 },
   coordination_message: { code: 'C', kind: 'coordination_message', duration: 6_500, priority: 6 },
   patch_apply_ended: { code: 'E', kind: 'patch_apply_ended', duration: 6_500, priority: 5 },
+  // These are literal user requests classified in-memory by a real lifecycle hook.
+  // They animate the requested motion, never the requested outcome.
+  handoff_requested: { code: 'B', kind: 'handoff', duration: 8_000, priority: 6 },
+  review_requested: { code: 'F', kind: 'review', duration: 8_000, priority: 6 },
+  owner_consult_requested: { code: 'G', kind: 'owner_request', duration: 10_000, priority: 8 },
   task_interrupted: { code: null, kind: 'error', duration: 10_000, priority: 9 },
   acting_lead_handoff: { code: 'B', kind: 'handoff', duration: 8_000, priority: 7 },
   discussion_started: { code: 'C', kind: 'discussion', duration: 10_000, priority: 6 },

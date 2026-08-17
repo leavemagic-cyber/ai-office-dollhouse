@@ -50,7 +50,7 @@ npm.cmd run package:win
 
 ## Privacy boundary
 
-Stored events may contain hashed session and agent identifiers, provider names, event types, tool names and only the final segment of a working directory. Full paths, command lines, account details, tokens, API keys, prompts, model responses and transcript content are never written to the event store.
+Stored events may contain hashed session and agent identifiers, provider names, event types, tool names and only the final segment of a working directory. Full paths, command lines, account details, tokens, API keys, prompts, model responses and transcript content are never written to the event store. For a trusted lifecycle hook, a short user-prompt prefix may be classified only in memory into an allowlisted request type such as `delegation_requested`; the prompt is neither stored nor used to claim a successful outcome.
 
 The app has no model API calls and does not control external agent processes. Read [Privacy](docs/PRIVACY.md) and [Provider integrations](docs/INTEGRATIONS.md) for the complete boundary.
 

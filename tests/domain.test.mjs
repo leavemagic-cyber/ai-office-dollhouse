@@ -180,6 +180,24 @@ test('special relationship state requires matching provider-neutral evidence', (
   assert.equal(state.teams.gemini.pods['gemini-session'].lastImportantEvent, 'review_passed');
 });
 
+test('hook-derived user requests remain requests in the live domain state', () => {
+  const state = createInitialState(base);
+  applyOfficeEvent(state, event({ eventId: 'start', eventType: 'session_started' }), base);
+  const pod = state.teams.codex.pods['session-a'];
+  for (const [index, eventType] of ['handoff_requested', 'review_requested', 'owner_consult_requested'].entries()) {
+    const applied = applyOfficeEvent(state, event({
+      eventId: `request:${eventType}`,
+      eventType,
+      sourceEvidence: `hook:intent:${eventType}`
+    }), base + index + 1);
+    assert.equal(applied.applied, true, eventType);
+  }
+  assert.equal(pod.activity, 'running');
+  assert.equal(pod.actingLeadAgentId, null, 'a handoff request never changes the acting lead');
+  assert.equal(state.owner.inboxCount, 0, 'an Owner consult request is not an unresolved permission request');
+  assert.equal(pod.deliveredCount, 0, 'a review request is not a delivery');
+});
+
 test('Tier-B local session records never overwrite a matching Tier-A Codex pod', () => {
   const state = createInitialState(base);
   applyOfficeEvent(state, event({

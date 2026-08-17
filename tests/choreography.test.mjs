@@ -108,6 +108,34 @@ test('signature cues are provider-neutral, source-gated, and initial seeds stay 
   assert.equal(namedReviewCommand.current(now).code, 'F', 'an explicit review-passed command is a real Tier-B action');
 });
 
+test('a trusted hook can animate explicit requests without inventing their outcomes', () => {
+  const now = 86_000;
+  const cases = [
+    { eventType: 'handoff_requested', sourceEvidence: 'hook:intent:handoff_requested', code: 'B', kind: 'handoff' },
+    { eventType: 'delegation_requested', sourceEvidence: 'hook:intent:delegation_requested', code: 'B', kind: 'delegation_request' },
+    { eventType: 'coordination_message', sourceEvidence: 'hook:intent:coordination_message', code: 'C', kind: 'coordination_message' },
+    { eventType: 'revision_requested', sourceEvidence: 'hook:intent:revision_requested', code: 'E', kind: 'revision' },
+    { eventType: 'review_requested', sourceEvidence: 'hook:intent:review_requested', code: 'F', kind: 'review' },
+    { eventType: 'owner_consult_requested', sourceEvidence: 'hook:intent:owner_consult_requested', code: 'G', kind: 'owner_request' }
+  ];
+  for (const item of cases) {
+    const coordinator = new ChoreographyCoordinator();
+    coordinator.ingest(observedModel([{
+      eventId: `request:${item.eventType}`,
+      provider: 'codex',
+      eventType: item.eventType,
+      timestamp: now,
+      sessionId: 's1',
+      sourceEvidence: item.sourceEvidence
+    }]), now);
+    const cue = coordinator.current(now);
+    assert.equal(cue.code, item.code, item.eventType);
+    assert.equal(cue.kind, item.kind, item.eventType);
+    assert.notEqual(cue.event.eventType, 'review_passed', `${item.eventType} must not claim a review pass`);
+    assert.notEqual(cue.event.eventType, 'task_completed', `${item.eventType} must not claim delivery`);
+  }
+});
+
 test('global choreography queue is bounded and prioritizes an Owner request', () => {
   const now = 50_000;
   const coordinator = new ChoreographyCoordinator({ maxQueue: 3 });

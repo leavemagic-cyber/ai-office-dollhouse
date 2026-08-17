@@ -31,20 +31,22 @@ presence 掃描能分辨已知 App／CLI 表面，但不能讀出 App 內開了�
 
 choreography 不會以 provider 名稱決定是否播放。每一筆會改變特殊動畫或重要狀態的事件，都必須攜帶不含內容的 `sourceEvidence`；它描述「實際觀察到的結構事實」，不是提示詞、回覆、工具 input/output 或 session ID。`hook:*` 來自該 provider 真正送出的生命週期 hook，`session:*` 來自 Codex 的唯讀 session 記錄。兩條路徑都進入同一個 event contract。
 
+若 Provider 的真實 `UserPromptSubmit`／`BeforeAgent` hook payload 帶有 prompt，relay 只在記憶體讀取最前 4096 個字元，將明示的交接、委派、討論、退修、審查或 Owner 請示轉成 allowlist 的 `hook:intent:<eventType>`。落盤只有 request 類型與原本的雜湊識別：絕不寫入、雜湊或回傳 prompt 本身，也不讀工具 input/output。這些事件的名稱一律是 `*_requested`，代表使用者作出了請求，而不是請求已成功完成。
+
 | 畫面 | 可以立刻由真實結構事件觸發 | 不能推測的條件 |
 |---|---|---|
 | A 入駐 | 已確認 subagent start 的 hook；或 Codex 的 `task_started` | 一般工具呼叫不等於新 agent |
 | D 失敗 | 已確認 subagent failed 的 hook；或 Codex 的 task interrupted | task 結束、取消與個別 agent 失敗不可混為一談 |
-| G Owner 請示 | hook 的 permission/elicitation；或 Codex 明確 `request_user_input` | 普通 user message 不等於請示 |
+| G Owner 請示 | hook 的 permission/elicitation；Codex 明確 `request_user_input`；或可信 hook 的明示 `owner_consult_requested` | 請示 request 不會把 Owner inbox 標成等待，也不等於已獲回覆 |
 | I 多人交件 | 同 provider 兩筆以上已確認 subagent finished | turn 完成不等於 subagent 交件 |
 | J 交件 | hook 的 explicit task completed；或 Codex 明確 `task_complete` | Stop、session close、patch end 都不等於交件 |
-| B 交接 | `spawn_agent`／`followup_task` 的直接交辦動作，或明確命名的 `lead_handoff`／`acting_lead_handoff` 命令 | 交辦不會留下未觀測的新 agent 或改稱交接已完成 |
-| C 討論 | `send_message` 的直接協調動作，或明確命名的 `start_discussion`／`discussion_started` 命令 | 單向訊息不會憑空補出與會者名單 |
-| E 退修 | `patch_apply_end` 的直接修訂動作，或明確命名的 `request_revision`／`revision_requested` 命令 | patch 不會被稱為外部審查退件 |
-| F 審查通過 | 明確命名的 `review_passed`／`review_approved` 命令，或 `orchestration:review_passed` | 普通完成、Stop、成功外觀或時間相鄰不等於審查通過 |
+| B 交接／委派 | 可信 hook 的明示 `handoff_requested`／`delegation_requested`；`spawn_agent`／`followup_task` 的直接交辦動作；或明確命名的 `lead_handoff`／`acting_lead_handoff` 命令 | request 不會留下未觀測的新 agent、變更 acting lead，或改稱交接已完成 |
+| C 討論 | 可信 hook 的明示 `coordination_message`；`send_message` 的直接協調動作；或明確命名的 `start_discussion`／`discussion_started` 命令 | 單向 request／訊息不會憑空補出與會者名單 |
+| E 退修 | 可信 hook 的明示 `revision_requested`；`patch_apply_end` 的直接修訂動作；或明確命名的 `request_revision`／`revision_requested` 命令 | request 或 patch 不會被稱為外部審查退件 |
+| F 審查 | 可信 hook 的明示 `review_requested` 可播放審查 request；明確命名的 `review_passed`／`review_approved` 命令或 `orchestration:review_passed` 才可稱通過 | 普通完成、Stop、成功外觀或時間相鄰不等於審查通過 |
 | H Owner 回覆／授權 | 同 session 的 Owner 回覆；或明確命名的 `authority_granted`／`delegated_decision_granted` 命令 | 一般 user message 不會自動改稱授權 |
 
-直接觀察到的命令會播放對應的完整意圖動作：交辦是 B、協調訊息是 C、patch 修訂是 E、Owner 回覆是 H。事件名稱與 Tier-B 標記保持原樣，不會把它們寫成已完成交接、正式會議、審查通過或已授權。這個契約可由所有 provider 的 adapter 採用；沒有列入 allowlist 的來源仍會被 state 層拒絕，因此不會把外部寫入或測試資料偽裝成真實動畫。
+可信 hook 的明示 request 與直接觀察到的命令都會播放對應動作：交接／委派是 B、協調訊息是 C、修訂是 E、審查 request 是 F、Owner 請示 request 是 G、Owner 回覆是 H。request 事件不會改寫 acting lead、建立新 agent、補出會議參與者、標為審查通過、建立 Owner 等待狀態或授權。事件名稱與 Tier-B 標記保持原樣；這個契約可由所有 provider 的 adapter 採用，沒有列入 allowlist 的來源仍會被 state 層拒絕，因此不會把外部寫入或測試資料偽裝成真實動畫。
 
 ## 無新指令時的日常動作
 

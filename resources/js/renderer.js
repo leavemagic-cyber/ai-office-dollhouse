@@ -1708,9 +1708,9 @@ function drawSignatureCue(ctx, room, cue, theme, project, height, time, layout, 
   } else if (cue.kind === 'owner_response') {
     drawOwnerResponse(ctx, room, project, theme, cue, time, layout);
     badge(theme.working);
-  } else if (cue.kind === 'revision' || cue.kind === 'approved') {
+  } else if (cue.kind === 'revision' || cue.kind === 'review' || cue.kind === 'approved') {
     drawReviewBeat(ctx, project, theme, cue, time, layout, cue.kind === 'approved');
-    badge(cue.kind === 'revision' ? theme.waiting : theme.working);
+    badge(cue.kind === 'approved' ? theme.working : theme.waiting);
   } else if (cue.kind === 'handoff') {
     drawLeadHandoff(ctx, project, theme, cue, time, layout);
     badge(theme.waiting);
@@ -1949,7 +1949,7 @@ export class RoomRenderer {
     const workingSpots = [];
 
     if (phase.figures > 0) {
-      const theatricalKinds = new Set(['arrival', 'delegation_request', 'coordination_message', 'patch_apply_ended', 'handoff', 'discussion', 'discussion_return', 'error', 'revision', 'approved', 'owner_request', 'owner_response', 'authority', 'multi_delivery', 'cancelled', 'closing_report', 'closing_departure']);
+      const theatricalKinds = new Set(['arrival', 'delegation_request', 'coordination_message', 'patch_apply_ended', 'handoff', 'discussion', 'discussion_return', 'error', 'revision', 'review', 'approved', 'owner_request', 'owner_response', 'authority', 'multi_delivery', 'cancelled', 'closing_report', 'closing_departure']);
       const cueSession = String(cue?.event?.sessionId || '');
       const stagedOccupants = cueOnThisFloor && theatricalKinds.has(cue?.kind)
         ? occupants.filter((person) => {

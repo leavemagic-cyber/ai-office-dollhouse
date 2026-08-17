@@ -5,13 +5,14 @@
 - 已知 AI App 套件是否安裝。
 - 已知 CLI 是否能由 PATH 找到。
 - 受限程序名稱、父子關係與可執行檔位置，用於判斷 App／CLI presence。
-- hook stdin 內少量生命週期欄位，轉成允許清單事件後立即結束。
+- hook stdin 內少量生命週期欄位，轉成允許清單事件後立即結束；支援 `UserPromptSubmit`／`BeforeAgent` 的 provider 只會在記憶體讀取 prompt 前 4096 個字元，以明示關鍵語意分類成 allowlist 的 `*_requested` 動作類型，隨即丟棄原文。
 - Codex Desktop 當日與前一日、近期修改 session JSONL 的有界尾端／增量位元組；只取 turn 與工具生命週期結構，不取 prompt、回覆、工具 input 或 output。
 - CPU、實體記憶體與電池概況，用於自動降載。
 
 ## 不會保存
 
 - prompt、模型回覆或對話內容。
+- prompt 的雜湊、摘要或可還原片段；由 prompt 暫時分類出的 request 類型可以保存，但不代表請求已完成。
 - transcript 內容或完整 transcript 路徑。
 - 完整命令列、帳號、token、API key、環境祕密。
 - 完整工作目錄；只留下最後一段安全化名稱。
