@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/leavemagic-cyber/ai-office-dollhouse/security
+    about: Review the security policy before reporting a vulnerability. Never post sensitive local data in a public issue.
