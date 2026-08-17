@@ -463,11 +463,11 @@ async function startTower() {
     if (!bridge.isNative) return { installed: [], alreadyReady: [] };
     const status = await bridge.integrationStatus();
     if (!status?.ok) throw new Error(status?.error || '整合狀態讀取失敗');
-    // Codex Desktop hook trust is an explicit user decision. The read-only
-    // session observer below is the fallback when that decision cannot be made,
-    // so startup must never add a Codex hook or trigger its trust flow.
+    // Install the official user-level Codex hook configuration just like the
+    // other providers. Codex performs its own normal /hooks review before it
+    // runs a non-managed command hook; the observer below remains the fallback.
     const missing = (status.results || [])
-      .filter((item) => !item.installed && item.provider !== 'codex')
+      .filter((item) => !item.installed)
       .map((item) => item.provider);
     const installed = [];
     for (const provider of missing) {
