@@ -59,11 +59,29 @@ test('signature cues are provider-neutral, source-gated, and initial seeds stay 
 
   const directDispatch = new ChoreographyCoordinator();
   directDispatch.ingest(observedModel([
-    { eventId: 'dispatch', provider: 'codex', eventType: 'delegation_requested', timestamp: now, sessionId: 's1', observationTier: 'B', sourceConfidence: 'local_session_record', sourceEvidence: 'session:delegation_requested' },
-    { eventId: 'message', provider: 'codex', eventType: 'coordination_message', timestamp: now + 1, sessionId: 's1', observationTier: 'B', sourceConfidence: 'local_session_record', sourceEvidence: 'session:coordination_message' }
+    { eventId: 'dispatch', provider: 'codex', eventType: 'delegation_requested', timestamp: now, sessionId: 's1', observationTier: 'B', sourceConfidence: 'local_session_record', sourceEvidence: 'session:delegation_requested' }
   ]), now + 1);
   assert.equal(directDispatch.current(now + 1).kind, 'delegation_request');
-  assert.equal(directDispatch.current(now + 1).code, null);
+  assert.equal(directDispatch.current(now + 1).code, 'B', 'a directly observed dispatch gets the B intent beat');
+
+  const directMessage = new ChoreographyCoordinator();
+  directMessage.ingest(observedModel([
+    { eventId: 'message', provider: 'codex', eventType: 'coordination_message', timestamp: now, sessionId: 's1', sourceEvidence: 'session:coordination_message' }
+  ]), now);
+  assert.equal(directMessage.current(now).code, 'C', 'a directly observed message gets the C communication beat');
+
+  const directRevision = new ChoreographyCoordinator();
+  directRevision.ingest(observedModel([
+    { eventId: 'patch', provider: 'codex', eventType: 'patch_apply_ended', timestamp: now, sessionId: 's1', sourceEvidence: 'session:patch_apply_ended' }
+  ]), now);
+  assert.equal(directRevision.current(now).code, 'E', 'a directly observed patch action gets the E revision beat');
+
+  const ownerReply = new ChoreographyCoordinator();
+  ownerReply.ingest(observedModel([
+    { eventId: 'reply', provider: 'codex', eventType: 'owner_input_received', timestamp: now, sessionId: 's1', sourceEvidence: 'session:owner_input_received' }
+  ]), now);
+  assert.equal(ownerReply.current(now).kind, 'owner_response');
+  assert.equal(ownerReply.current(now).code, 'H', 'a directly observed Owner reply gets the H response beat');
 
   const initialSeed = new ChoreographyCoordinator();
   initialSeed.ingest(observedModel([
@@ -82,6 +100,12 @@ test('signature cues are provider-neutral, source-gated, and initial seeds stay 
     { eventId: 'review', provider: 'gemini', eventType: 'review_passed', timestamp: now, sessionId: 's1', sourceEvidence: 'orchestration:review_passed' }
   ]), now);
   assert.equal(explicitReview.current(now).code, 'F');
+
+  const namedReviewCommand = new ChoreographyCoordinator();
+  namedReviewCommand.ingest(observedModel([
+    { eventId: 'named-review', provider: 'codex', eventType: 'review_passed', timestamp: now, sessionId: 's1', sourceEvidence: 'session:review_passed' }
+  ]), now);
+  assert.equal(namedReviewCommand.current(now).code, 'F', 'an explicit review-passed command is a real Tier-B action');
 });
 
 test('global choreography queue is bounded and prioritizes an Owner request', () => {

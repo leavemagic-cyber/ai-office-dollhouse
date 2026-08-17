@@ -192,6 +192,11 @@ test('Codex session observer maps only direct metadata to special Tier-B cues an
     JSON.stringify({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'user_message', text: privateText } }),
     JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item', payload: { type: 'custom_tool_call', name: 'collaboration.followup_task', input: privateText } }),
     JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item', payload: { type: 'custom_tool_call', name: 'collaboration.send_message', input: privateText } }),
+    JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item', payload: { type: 'custom_tool_call', name: 'functions.lead_handoff', input: privateText } }),
+    JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item', payload: { type: 'custom_tool_call', name: 'functions.start_discussion', input: privateText } }),
+    JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item', payload: { type: 'custom_tool_call', name: 'functions.request_revision', input: privateText } }),
+    JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item', payload: { type: 'custom_tool_call', name: 'functions.review_approved', input: privateText } }),
+    JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item', payload: { type: 'custom_tool_call', name: 'functions.authority_granted', input: privateText } }),
     JSON.stringify({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'task_failed', text: privateText } })
   ].join('\n') + '\n', 'utf8');
 
@@ -201,7 +206,8 @@ test('Codex session observer maps only direct metadata to special Tier-B cues an
   const appended = events.slice(seedEvents.length);
   assert.deepEqual(appended.map((event) => event.eventType), [
     'task_started', 'patch_apply_ended', 'owner_input_required', 'owner_input_received',
-    'delegation_requested', 'coordination_message', 'task_interrupted'
+    'delegation_requested', 'coordination_message', 'acting_lead_handoff', 'discussion_started',
+    'revision_requested', 'review_passed', 'delegated_decision_granted', 'task_interrupted'
   ]);
   assert.ok(appended.every((event) => event.observationTier === 'B'
     && event.sourceConfidence === 'local_session_record'
@@ -209,7 +215,9 @@ test('Codex session observer maps only direct metadata to special Tier-B cues an
   assert.deepEqual(appended.map((event) => event.sourceEvidence), [
     'session:task_started', 'session:patch_apply_ended', 'session:owner_input_required',
     'session:owner_input_received', 'session:delegation_requested',
-    'session:coordination_message', 'session:task_interrupted'
+    'session:coordination_message', 'session:acting_lead_handoff', 'session:discussion_started',
+    'session:revision_requested', 'session:review_passed', 'session:delegated_decision_granted',
+    'session:task_interrupted'
   ]);
   assert.equal(events.some((event) => event.eventType === 'agent_spawned'), false,
     'a collaboration request is never misreported as a successful new agent');
@@ -227,8 +235,18 @@ test('Codex read-only fallback never installs or trusts a Codex hook automatical
   assert.match(appInstaller, /@\('claude', 'gemini', 'grok'\)/);
   assert.doesNotMatch(appInstaller, /-Provider all -Action install/);
   assert.match(appInstaller, /automaticHookInstallSkipped = \$true/);
+  assert.match(appInstaller, /\[switch\]\$SkipIntegrations/);
+  assert.match(appInstaller, /if \(\$SkipIntegrations\)/);
   assert.match(appMain, /item\.provider !== 'codex'/);
   assert.doesNotMatch(appMain, /Codex 首次可能需信任一次/);
+});
+
+test('local packaging preserves earlier release artifacts and visual-test material', () => {
+  const packageScript = readFileSync(join(root, 'scripts', 'package-release.ps1'), 'utf8');
+  assert.match(packageScript, /\$allowed = @\('\.tmp', 'bin', 'dist'\)/);
+  assert.match(packageScript, /foreach \(\$generatedDirectory in @\('\.tmp', 'bin', 'dist'\)\)/);
+  assert.doesNotMatch(packageScript, /Remove-ProjectGeneratedDirectory 'release'/);
+  assert.doesNotMatch(packageScript, /Remove-ProjectGeneratedDirectory '\.visual-test'/);
 });
 
 test('the wordless overlay never exposes verification state as a visible tooltip', () => {

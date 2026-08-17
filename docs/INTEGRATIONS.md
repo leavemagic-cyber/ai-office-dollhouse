@@ -38,9 +38,17 @@ choreography 不會以 provider 名稱決定是否播放。每一筆會改變特
 | G Owner 請示 | hook 的 permission/elicitation；或 Codex 明確 `request_user_input` | 普通 user message 不等於請示 |
 | I 多人交件 | 同 provider 兩筆以上已確認 subagent finished | turn 完成不等於 subagent 交件 |
 | J 交件 | hook 的 explicit task completed；或 Codex 明確 `task_complete` | Stop、session close、patch end 都不等於交件 |
-| B 交接、C 討論、E 退修、F 審查通過、H 授權 | 保留給未來能產生 `orchestration:*` 直接紀錄的真實協作來源 | 委派請求、單向訊息、工具名稱、時間相鄰或文字內容都不得推論為這些關係 |
+| B 交接 | `spawn_agent`／`followup_task` 的直接交辦動作，或明確命名的 `lead_handoff`／`acting_lead_handoff` 命令 | 交辦不會留下未觀測的新 agent 或改稱交接已完成 |
+| C 討論 | `send_message` 的直接協調動作，或明確命名的 `start_discussion`／`discussion_started` 命令 | 單向訊息不會憑空補出與會者名單 |
+| E 退修 | `patch_apply_end` 的直接修訂動作，或明確命名的 `request_revision`／`revision_requested` 命令 | patch 不會被稱為外部審查退件 |
+| F 審查通過 | 明確命名的 `review_passed`／`review_approved` 命令，或 `orchestration:review_passed` | 普通完成、Stop、成功外觀或時間相鄰不等於審查通過 |
+| H Owner 回覆／授權 | 同 session 的 Owner 回覆；或明確命名的 `authority_granted`／`delegated_decision_granted` 命令 | 一般 user message 不會自動改稱授權 |
 
-目前 Codex 的 `collaboration.followup_task`／`send_message` 只會播放較小的「委派請求」／「協作訊息」物件動作；它們不是已完成交接或多人討論。這個限制同樣適用所有 provider。沒有列入契約的來源會被 state 層拒絕，因此不會把外部寫入或測試資料偽裝成真實的大動畫。
+直接觀察到的命令會播放對應的完整意圖動作：交辦是 B、協調訊息是 C、patch 修訂是 E、Owner 回覆是 H。事件名稱與 Tier-B 標記保持原樣，不會把它們寫成已完成交接、正式會議、審查通過或已授權。這個契約可由所有 provider 的 adapter 採用；沒有列入 allowlist 的來源仍會被 state 層拒絕，因此不會把外部寫入或測試資料偽裝成真實動畫。
+
+## 無新指令時的日常動作
+
+真實 live lifecycle 只負責讓人偶出現，以及標示其大狀態（工作、等待 Owner、閒置、討論、休息）。只要該人偶仍是 live，就由本機 renderer 在原座位輪替不帶任務語意的日常動作，例如鍵盤、筆記、檢視、整理、伸展、閱讀或喝水；它不新增事件、不改變 activity、不產生新的人偶，也不宣稱任何工具、審查、交接或交件已發生。特殊 A–J 動畫暫時覆蓋該人偶的日常動作，結束後回到相同的 live 狀態與座位。`snapshotWork` 永遠不會建立人偶，因此也不會得到日常動作。
 
 ## 移除
 
