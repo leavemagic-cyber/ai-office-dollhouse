@@ -1,6 +1,6 @@
 {
   "name": "ai-office-dollhouse",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "private": true,
   "type": "module",
   "description": "A read-only Windows overlay for local coding-agent activity.",
