@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { globalChoreography } from '../resources/js/choreography.js';
+import { observationForSourceEvidence, sourceEvidenceFor } from '../resources/js/event-evidence.js';
 import { RoomRenderer } from '../resources/js/renderer.js';
 import { idleCueForModel, P4_ACTIONS, P4_SLOT_MS } from '../resources/js/renderer.js';
 import { PLATE } from '../resources/js/sketch.js';
@@ -98,12 +99,15 @@ function modelAt(now, recentEvents, {
 }
 
 function event(now, eventType, extra = {}) {
+  const sourceEvidence = extra.sourceEvidence || sourceEvidenceFor(eventType);
   return {
     eventId: `${eventType}:${Math.random()}`,
     eventType,
     provider: 'codex',
     sessionId: 'draw',
     timestamp: now - 1_000,
+    ...observationForSourceEvidence(sourceEvidence),
+    sourceEvidence,
     ...extra
   };
 }
@@ -192,6 +196,25 @@ test('A-J and cancellation cues draw human motion through RoomRenderer.draw', ()
     event(now, 'agent_finished', { eventId: 'finish:2', agentId: 'helper:2' })
   ]);
   assert.ok(figureHeads(multi) >= 3, 'multi-delivery must draw a visible human queue');
+});
+
+test('direct local-metadata dispatch cues add visible object motion without inventing people', () => {
+  const baseline = actualDraw([]);
+  const baselineHeads = figureHeads(baseline);
+  const cases = [
+    ['delegation_requested', 'delegation-request'],
+    ['coordination_message', 'coordination-message'],
+    ['patch_apply_ended', 'patch-apply-ended']
+  ];
+  for (const [eventType, markName] of cases) {
+    const calls = actualDraw((now) => [event(now, eventType)]);
+    assert.ok(animationMarks(calls, 'signature').some((mark) => mark[2] === markName),
+      `${eventType} must reach its factual special-motion draw path`);
+    assert.ok(geometryCount(calls) > geometryCount(baseline),
+      `${eventType} must add real object geometry`);
+    assert.equal(figureHeads(calls), baselineHeads,
+      `${eventType} must not invent an unobserved worker`);
+  }
 });
 
 test('project closure uses actual people and distinguishes report from quiet departure', () => {

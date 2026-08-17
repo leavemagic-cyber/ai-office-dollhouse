@@ -320,6 +320,18 @@ export class NativeBridge {
     }
   }
 
+  async observeCodexSessions() {
+    try {
+      const result = await this.runNodeScript('observe-codex-sessions.mjs');
+      if (Number(result.exitCode) !== 0) return { ok: false, emitted: 0, observedSessions: 0 };
+      return lastJsonLine(result.stdOut);
+    } catch {
+      // This is a read-only fallback for Desktop sessions. Its absence cannot block
+      // true hook events, snapshots, or the low-impact overlay.
+      return { ok: false, emitted: 0, observedSessions: 0 };
+    }
+  }
+
   async installIntegration(provider) {
     if (!PROVIDER_ALLOWLIST.has(provider) || provider === 'all') throw new Error('Unsupported provider');
     const action = 'install';

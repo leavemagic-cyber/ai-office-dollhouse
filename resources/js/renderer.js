@@ -1201,6 +1201,77 @@ function drawArrival(ctx, project, theme, cue, time, layout) {
   if (progress >= .72) drawFolder(ctx, manager[0] + 4, manager[1] - 8, theme);
 }
 
+// A direct collaboration dispatch is not evidence that a new worker has arrived.
+// Keep this cue object-only: a real person appears only when an independently
+// observed task/session creates one in the model.
+function drawDelegationRequest(ctx, project, theme, cue, time, layout) {
+  const progress = ease(clamp(cue.progress));
+  const manager = cuePoint(project, layout?.manager, { gx: 2.35, gy: 8.1 });
+  const door = cuePoint(project, layout?.walkway, { gx: 5.5, gy: 9.2 });
+  const local = ease(clamp((progress - .08) / .8));
+  const x = manager[0] + (door[0] - manager[0]) * local;
+  const y = manager[1] + (door[1] - manager[1]) * local - Math.sin(local * Math.PI) * 7;
+  ctx.recordAnimationCue?.('signature', 'delegation-request', { progress: cue.progress });
+  drawFolder(ctx, x, y, theme, null, { toolbox: true });
+  ctx.save();
+  ctx.strokeStyle = theme.soft;
+  ctx.lineWidth = .5;
+  ctx.globalAlpha *= .42 + .35 * Math.sin(time / 160) ** 2;
+  for (let index = 0; index < 2; index += 1) {
+    ctx.beginPath();
+    ctx.arc(x - 5 - index * 2.1, y + 1.6, 1 + index * .25, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// A sent collaboration message is visible as a physical dispatch, but never
+// impersonates a meeting or invents participants that were not observed.
+function drawCoordinationMessage(ctx, project, theme, cue, time, layout) {
+  const progress = ease(clamp(cue.progress));
+  const manager = cuePoint(project, layout?.manager, { gx: 2.35, gy: 8.1 });
+  const targetSeat = cueSeatPoints(layout)[0] || { gx: 5.2, gy: 5.4 };
+  const target = project(targetSeat.gx, targetSeat.gy);
+  const local = ease(clamp((progress - .1) / .72));
+  const x = manager[0] + (target[0] - manager[0]) * local;
+  const y = manager[1] + (target[1] - manager[1]) * local - Math.sin(local * Math.PI) * 5;
+  ctx.recordAnimationCue?.('signature', 'coordination-message', { progress: cue.progress });
+  ctx.save();
+  ctx.strokeStyle = theme.soft;
+  ctx.lineWidth = .45;
+  ctx.globalAlpha *= .48;
+  ctx.beginPath();
+  ctx.moveTo(manager[0], manager[1] - 4);
+  ctx.quadraticCurveTo((manager[0] + target[0]) / 2, Math.min(manager[1], target[1]) - 13, target[0], target[1] - 4);
+  ctx.stroke();
+  ctx.restore();
+  drawFolder(ctx, x, y, theme);
+}
+
+// patch_apply_end is only an observed end marker. Draw the physical patch packet
+// settling at the desk; do not call it a review pass or a successful delivery.
+function drawPatchApplyEnded(ctx, project, theme, cue, time, layout) {
+  const progress = ease(clamp(cue.progress));
+  const manager = cuePoint(project, layout?.manager, { gx: 2.35, gy: 8.1 });
+  const drop = ease(clamp((progress - .08) / .5));
+  const x = manager[0] + 4.2;
+  const y = manager[1] - 18 + 10 * drop;
+  ctx.recordAnimationCue?.('signature', 'patch-apply-ended', { progress: cue.progress });
+  drawFolder(ctx, x, y, theme, null, { toolbox: true });
+  ctx.save();
+  ctx.strokeStyle = theme.soft;
+  ctx.lineWidth = .45;
+  ctx.globalAlpha *= clamp((progress - .45) / .25);
+  for (let index = 0; index < 3; index += 1) {
+    ctx.beginPath();
+    ctx.moveTo(x - 4.3 + index * 1.5, manager[1] - 4.2);
+    ctx.lineTo(x - 3.6 + index * 1.5, manager[1] - 2.3);
+    ctx.stroke();
+  }
+  ctx.restore();
+  void time;
+}
+
 function drawLeadHandoff(ctx, project, theme, cue, time, layout) {
   const progress = ease(clamp(cue.progress));
   const manager = cuePoint(project, layout?.manager, { gx: 2.35, gy: 8.1 });
@@ -1400,6 +1471,15 @@ function drawSignatureCue(ctx, room, cue, theme, project, height, time, layout, 
 
   if (cue.kind === 'arrival') {
     drawArrival(ctx, project, theme, cue, time, layout);
+    badge(theme.working);
+  } else if (cue.kind === 'delegation_request') {
+    drawDelegationRequest(ctx, project, theme, cue, time, layout);
+    badge(theme.working);
+  } else if (cue.kind === 'coordination_message') {
+    drawCoordinationMessage(ctx, project, theme, cue, time, layout);
+    badge(theme.working);
+  } else if (cue.kind === 'patch_apply_ended') {
+    drawPatchApplyEnded(ctx, project, theme, cue, time, layout);
     badge(theme.working);
   } else if (cue.kind === 'owner_request') {
     drawOwnerRequest(ctx, room, project, theme, cue, time);

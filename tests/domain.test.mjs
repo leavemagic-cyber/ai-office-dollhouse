@@ -8,11 +8,12 @@ import {
   summarizeState,
   workVisualForEvent
 } from '../resources/js/domain.js';
+import { observationForSourceEvidence, sourceEvidenceFor } from '../resources/js/event-evidence.js';
 
 const base = 1_800_000_000_000;
 
 function event(overrides = {}) {
-  return {
+  const value = {
     eventId: `e-${Math.random()}`,
     timestamp: base,
     provider: 'codex',
@@ -21,9 +22,19 @@ function event(overrides = {}) {
     eventType: 'session_started',
     sessionId: 'session-a',
     taskLabel: '命理',
-    observationTier: 'A',
     ...overrides
   };
+  if (!Object.prototype.hasOwnProperty.call(overrides, 'sourceEvidence')) {
+    value.sourceEvidence = sourceEvidenceFor(value.eventType);
+  }
+  const observation = observationForSourceEvidence(value.sourceEvidence);
+  if (!Object.prototype.hasOwnProperty.call(overrides, 'observationTier')) {
+    value.observationTier = observation.observationTier;
+  }
+  if (!Object.prototype.hasOwnProperty.call(overrides, 'sourceConfidence')) {
+    value.sourceConfidence = observation.sourceConfidence;
+  }
+  return value;
 }
 
 test('every design-canon work vignette requires and accepts an explicit structured fact', () => {
@@ -113,6 +124,83 @@ test('turn idle, final delivery, and stopped keep distinct evidence', () => {
   assert.equal(late.applied, false);
   assert.equal(late.reason, 'terminal_session_event');
   assert.equal(pod.lifecycle, 'completed');
+});
+
+test('direct task metadata drives a truthful task lifecycle without inventing an agent result', () => {
+  const state = createInitialState(base);
+  applyOfficeEvent(state, event({ eventId: 'task-start', eventType: 'task_started' }), base);
+  let pod = state.teams.codex.pods['session-a'];
+  assert.equal(pod.activity, 'running');
+  assert.equal(pod.agents['main:session-a'].activity, 'working');
+
+  applyOfficeEvent(state, event({ eventId: 'patch-ended', eventType: 'patch_apply_ended' }), base + 1);
+  pod = state.teams.codex.pods['session-a'];
+  assert.equal(pod.activity, 'running');
+  assert.equal(pod.deliveredCount, 0, 'a patch end is not a review pass or delivery');
+
+  applyOfficeEvent(state, event({ eventId: 'interrupted', eventType: 'task_interrupted' }), base + 2);
+  pod = state.teams.codex.pods['session-a'];
+  assert.equal(pod.activity, 'unknown');
+  assert.equal(pod.agents['main:session-a'].activity, 'unknown');
+  assert.equal(pod.lifecycle, 'active', 'an interruption is not a completed session');
+});
+
+test('special relationship state requires matching provider-neutral evidence', () => {
+  const state = createInitialState(base);
+  applyOfficeEvent(state, event({ eventId: 'start', eventType: 'session_started' }), base);
+  const forgedTier = applyOfficeEvent(state, event({
+    eventId: 'forged-hook-tier',
+    eventType: 'task_completed',
+    observationTier: 'B',
+    sourceConfidence: 'local_session_record',
+    sourceEvidence: 'hook:task_completed'
+  }), base + 1);
+  assert.equal(forgedTier.applied, false);
+  assert.equal(forgedTier.reason, 'semantic_evidence_missing');
+
+  const invented = applyOfficeEvent(state, event({
+    eventId: 'invented-review',
+    eventType: 'review_passed',
+    provider: 'claude',
+    surfaceId: 'claude:cli',
+    sourceEvidence: 'hook:task_completed'
+  }), base + 2);
+  assert.equal(invented.applied, false);
+  assert.equal(invented.reason, 'semantic_evidence_missing');
+
+  const direct = applyOfficeEvent(state, event({
+    eventId: 'direct-review',
+    eventType: 'review_passed',
+    provider: 'gemini',
+    surfaceId: 'gemini:cli',
+    sessionId: 'gemini-session',
+    sourceEvidence: 'orchestration:review_passed'
+  }), base + 3);
+  assert.equal(direct.applied, true);
+  assert.equal(state.teams.gemini.pods['gemini-session'].lastImportantEvent, 'review_passed');
+});
+
+test('Tier-B local session records never overwrite a matching Tier-A Codex pod', () => {
+  const state = createInitialState(base);
+  applyOfficeEvent(state, event({
+    eventId: 'tier-a-turn',
+    eventType: 'turn_started',
+    observationTier: 'A',
+    sourceConfidence: 'structured'
+  }), base);
+  const fallback = applyOfficeEvent(state, event({
+    eventId: 'tier-b-seed',
+    eventType: 'session_observed',
+    observationTier: 'B',
+    sourceConfidence: 'local_session_record',
+    timestamp: base + 1
+  }), base + 1);
+
+  assert.equal(fallback.applied, false);
+  assert.equal(fallback.reason, 'tier_a_precedence');
+  const pod = state.teams.codex.pods['session-a'];
+  assert.equal(pod.activity, 'running', 'a lower-confidence seed cannot reset actual hook work to idle');
+  assert.equal(pod.lastTierAAt, base);
 });
 
 test('adapter disconnect degrades active work to unknown, not completed', () => {
@@ -253,7 +341,9 @@ test('the default stale window preserves a ten-minute running task', () => {
 
 test('unresolved Owner requests survive stale and disconnect degradation until explicitly resolved', () => {
   const state = createInitialState(base);
-  applyOfficeEvent(state, event({ eventId: 'wait', eventType: 'owner_input_required' }), base);
+  applyOfficeEvent(state, event({
+    eventId: 'wait', eventType: 'owner_input_required', sourceEvidence: 'session:owner_input_required'
+  }), base);
   const pod = state.teams.codex.pods['session-a'];
 
   degradeStaleSessions(state, base + 10_000, 1000);
@@ -261,8 +351,12 @@ test('unresolved Owner requests survive stale and disconnect degradation until e
   assert.equal(pod.lastActivityAt, base + 10_000);
   assert.equal(state.owner.inboxCount, 1);
 
-  applyOfficeEvent(state, event({ eventId: 'turn-after-wait', eventType: 'turn_started' }), base + 10_001);
-  applyOfficeEvent(state, event({ eventId: 'spawn-after-wait', eventType: 'agent_spawned', agentId: 'still-waiting' }), base + 10_002);
+  applyOfficeEvent(state, event({
+    eventId: 'turn-after-wait', eventType: 'turn_started', sourceEvidence: 'session:lifecycle'
+  }), base + 10_001);
+  applyOfficeEvent(state, event({
+    eventId: 'dispatch-after-wait', eventType: 'delegation_requested'
+  }), base + 10_002);
   assert.equal(pod.activity, 'waiting_owner');
   assert.equal(state.owner.inboxCount, 1);
 
@@ -367,8 +461,12 @@ test('annex count expands vertically without changing session identity', () => {
 
 test('repeated Owner request events do not duplicate the same waiting visitor', () => {
   const state = createInitialState(base);
-  applyOfficeEvent(state, event({ eventId: 'wait-1', eventType: 'owner_input_required' }), base);
-  applyOfficeEvent(state, event({ eventId: 'wait-2', eventType: 'owner_input_required' }), base + 1);
+  applyOfficeEvent(state, event({
+    eventId: 'wait-1', eventType: 'owner_input_required', sourceEvidence: 'session:owner_input_required'
+  }), base);
+  applyOfficeEvent(state, event({
+    eventId: 'wait-2', eventType: 'owner_input_required', sourceEvidence: 'session:owner_input_required'
+  }), base + 1);
   assert.equal(state.owner.inboxCount, 1);
   applyOfficeEvent(state, event({ eventId: 'answer', eventType: 'owner_input_received' }), base + 2);
   assert.equal(state.owner.inboxCount, 0);
