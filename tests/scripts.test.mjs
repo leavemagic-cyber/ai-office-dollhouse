@@ -291,12 +291,12 @@ test('a Codex hook-shaped payload survives relay -> domain and becomes a live po
 
 test('integration installer backs up and merges idempotently in an isolated root', { skip: process.platform !== 'win32' }, () => {
   const configRoot = mkdtempSync(join(tmpdir(), 'ai-office-config-'));
-  // Codex 0.146.0 reads user command hooks from ~/.codex/hooks/hooks.json. Seed it with an
-  // unrelated pre-existing hook to prove the installer merges rather than clobbers.
-  const codexPath = join(configRoot, '.codex', 'hooks', 'hooks.json');
-  // An obsolete root hook file may have been created by an earlier build. The
-  // installer must clean only its own entry from it.
-  const legacyCodexPath = join(configRoot, '.codex', 'hooks.json');
+  // Codex loads user hooks from ~/.codex/hooks.json. Seed it with an unrelated
+  // hook to prove the installer merges rather than clobbers.
+  const codexPath = join(configRoot, '.codex', 'hooks.json');
+  // A prior build incorrectly wrote this app's group beneath the plugin-style
+  // nested path. The installer must clean only that app-owned entry from it.
+  const legacyCodexPath = join(configRoot, '.codex', 'hooks', 'hooks.json');
   const claudePath = join(configRoot, '.claude', 'settings.json');
   mkdirSync(dirname(codexPath), { recursive: true });
   mkdirSync(dirname(legacyCodexPath), { recursive: true });
@@ -318,8 +318,8 @@ test('integration installer backs up and merges idempotently in an isolated root
   const firstResult = lastJsonLine(first.stdout);
   assert.equal(firstResult.ok, true);
   const codexResult = firstResult.results.find((item) => item.provider === 'codex');
-  assert.match(codexResult.path, /[\\/]\.codex[\\/]hooks[\\/]hooks\.json$/i);
-  assert.equal(codexResult.legacyMigrated, true, 'installer must report that it cleaned the obsolete root hook file');
+  assert.match(codexResult.path, /[\\/]\.codex[\\/]hooks\.json$/i);
+  assert.equal(codexResult.legacyMigrated, true, 'installer must report that it cleaned the misplaced nested hook file');
   const second = runScript('install-integrations.ps1', args);
   assert.equal(second.status, 0, `${second.stderr}\n${second.stdout}`);
 
@@ -332,7 +332,7 @@ test('integration installer backs up and merges idempotently in an isolated root
   const legacyGroups = legacyCodex.hooks.SessionStart || [];
   const legacyCommands = legacyGroups.flatMap((group) => group.hooks.map((hook) => hook.command));
   assert.equal(legacyCommands.some((command) => command.includes('AIOfficeHookRelay.exe')), false,
-    'the obsolete root hook file must not still claim the integration is installed there');
+    'the misplaced nested hook file must not still claim the integration is installed there');
   const commands = claude.hooks.SessionStart.flatMap((group) => group.hooks.map((hook) => hook.command));
   assert.ok(commands.includes('existing-safe-hook'));
   assert.equal(commands.filter((command) => command.includes('AIOfficeHookRelay.exe')).length, 1);
@@ -360,32 +360,32 @@ test('integration installer backs up and merges idempotently in an isolated root
   assert.ok(readdirSync(dirname(claudePath)).some((name) => name.startsWith('settings.json.bak_ai_office_')));
 
   const expected = [
-    join(configRoot, '.codex', 'hooks', 'hooks.json'),
+    join(configRoot, '.codex', 'hooks.json'),
     join(configRoot, '.gemini', 'settings.json'),
     join(configRoot, '.grok', 'hooks', 'ai-office-dollhouse.json')
   ];
   expected.forEach((path) => assert.equal(existsSync(path), true, path));
 });
 
-test('status reports codex as installed only via the supported nested hooks path, never the obsolete root path alone', { skip: process.platform !== 'win32' }, () => {
+test('status reports codex as installed only via the supported root hooks path, never the nested plugin path alone', { skip: process.platform !== 'win32' }, () => {
   const configRoot = mkdtempSync(join(tmpdir(), 'ai-office-status-'));
-  const legacyCodexPath = join(configRoot, '.codex', 'hooks.json');
+  const legacyCodexPath = join(configRoot, '.codex', 'hooks', 'hooks.json');
   mkdirSync(dirname(legacyCodexPath), { recursive: true });
-  // An obsolete root file that merely looks installed must not be reported as
-  // installed: the CLI reads the nested user source on this installed version.
+  // A nested plugin-style file that merely looks installed must not be reported
+  // as installed: the CLI reads the root user source.
   writeFileSync(legacyCodexPath, JSON.stringify({
     hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'C:\\stale\\AIOfficeHookRelay.exe codex auto' }] }] }
   }, null, 2));
   const staleStatus = lastJsonLine(runScript('install-integrations.ps1', ['-Provider', 'codex', '-Action', 'status', '-ConfigRoot', configRoot]).stdout);
   const staleResult = staleStatus.results[0];
-  assert.equal(staleResult.installed, false, 'a marker only in the obsolete root path must not read as installed');
+  assert.equal(staleResult.installed, false, 'a marker only in the nested plugin path must not read as installed');
   assert.equal(staleResult.legacyDetected, true);
 
   runScript('install-integrations.ps1', ['-Provider', 'codex', '-Action', 'install', '-ConfigRoot', configRoot]);
   const freshStatus = lastJsonLine(runScript('install-integrations.ps1', ['-Provider', 'codex', '-Action', 'status', '-ConfigRoot', configRoot]).stdout);
   const freshResult = freshStatus.results[0];
   assert.equal(freshResult.installed, true);
-  assert.match(freshResult.path, /[\\/]\.codex[\\/]hooks[\\/]hooks\.json$/i);
+  assert.match(freshResult.path, /[\\/]\.codex[\\/]hooks\.json$/i);
 });
 
 test('integration installer serializes newly created hook groups as arrays', { skip: process.platform !== 'win32' }, () => {
@@ -395,7 +395,7 @@ test('integration installer serializes newly created hook groups as arrays', { s
   assert.equal(lastJsonLine(result.stdout).ok, true);
 
   const settings = [
-    join(configRoot, '.codex', 'hooks', 'hooks.json'),
+    join(configRoot, '.codex', 'hooks.json'),
     join(configRoot, '.claude', 'settings.json'),
     join(configRoot, '.gemini', 'settings.json'),
     join(configRoot, '.grok', 'hooks', 'ai-office-dollhouse.json')
